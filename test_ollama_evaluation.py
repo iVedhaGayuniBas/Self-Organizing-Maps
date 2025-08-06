@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from context_evaluation_with_ollama import OllamaEvaluator
+# from context_evaluation_with_ollama import OllamaEvaluator
 import time
 
 def test_ollama_connection():
