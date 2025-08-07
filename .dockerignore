@@ -1,0 +1,65 @@
+# Git and version control
+.git
+.gitignore
+.gitattributes
+
+# Python cache and virtual environments
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+evaluation_env/
+venv/
+env/
+.venv/
+
+# Jupyter and IPython
+.ipynb_checkpoints
+.jupyter
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+logs/
+.pytest_cache/
+.coverage
+.tox/
+
+# Large data files (copy manually to data/ if needed)
+*.xlsx
+*.csv
+*.pickle
+*.pkl
+
+# Docker files (not needed in container)
+Dockerfile
+docker-compose.yml
+docker-setup.sh
+
+# Documentation
+README*.md
+*.md
+
+# Output directories (created in container)
+outputs/
+contexts/
+
+# Node modules (if any)
+node_modules/
+
+# Miscellaneous
+.env
+.env.local
+.env.production
+.env.test

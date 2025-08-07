@@ -13,6 +13,13 @@ from sompy.sompy import SOMFactory
 from math import sqrt
 import csv
 
+# Optional Ray imports
+try:
+    import ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
 # --- CONFIGURATION ---
 INPUT_FILE = "Self-Organizing-Maps/questions_answers.xlsx"   # Your Excel file
 OUTPUT_FILE = "Self-Organizing-Maps/retrieved_contexts.csv"  # Where to save results

@@ -22,6 +22,13 @@ import warnings
 import ast
 warnings.filterwarnings('ignore')
 
+# Optional Ray imports
+try:
+    import ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
 class OllamaEvaluator:
     """Evaluates contexts using local Ollama LLM"""
     
@@ -65,6 +72,37 @@ Response:"""
         
         response = self.query_llm(prompt)
         return response.upper().startswith("YES")
+
+# Ray-enabled evaluator for distributed processing
+if RAY_AVAILABLE:
+    @ray.remote
+    class RayOllamaEvaluator:
+        """Ray remote actor for distributed evaluation"""
+        
+        def __init__(self, model_name: str = "llama3:latest", base_url: str = "http://host.docker.internal:11434"):
+            self.evaluator = OllamaEvaluator(model_name, base_url)
+        
+        def evaluate_batch(self, batch_data: List[Tuple]) -> List[Dict[str, Any]]:
+            """Evaluate a batch of questions"""
+            results = []
+            for question, answer, som_contexts, cosine_contexts in batch_data:
+                som_contains_answer = any(
+                    self.evaluator.evaluate_context_contains_answer(question, answer, ctx)
+                    for ctx in som_contexts
+                )
+                
+                cosine_contains_answer = any(
+                    self.evaluator.evaluate_context_contains_answer(question, answer, ctx)
+                    for ctx in cosine_contexts
+                )
+                
+                results.append({
+                    'question': question,
+                    'answer': answer,
+                    'som_contains_answer': som_contains_answer,
+                    'cosine_contains_answer': cosine_contains_answer
+                })
+            return results
 
 def load_qa_data(file_path: str) -> Tuple[List[str], List[str]]:
     """Load questions and answers from Excel file (Title | Question | Answer)"""
@@ -139,13 +177,26 @@ def evaluate_context_retrieval(
     answers: List[str], 
     som_contexts: List[Tuple[List[str], np.ndarray]], 
     cosine_contexts: List[Tuple[List[str], np.ndarray]], 
-    max_workers: int = 4
+    max_workers: int = 4,
+    use_ray: bool = False,
+    ray_evaluators: int = 8,
+    batch_size: int = 10
 ) -> Tuple[pd.DataFrame, Dict, Dict, Dict, Dict]:
     """
     Evaluate context retrieval performance using Ollama
     """
-    print(f"Starting evaluation of {len(questions)} questions with {max_workers} workers...")
+    print(f"Starting evaluation of {len(questions)} questions...")
     
+    if use_ray and RAY_AVAILABLE:
+        print(f"Using Ray distributed evaluation with {ray_evaluators} evaluators")
+        return _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, 
+                                ray_evaluators, batch_size)
+    else:
+        print(f"Using standard evaluation with {max_workers} workers")
+        return _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers)
+
+def _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers):
+    """Standard evaluation using ThreadPoolExecutor"""
     evaluator = OllamaEvaluator()
     
     args_list = [
@@ -167,6 +218,38 @@ def evaluate_context_retrieval(
         # Small delay between batches
         time.sleep(1)
     
+    return _process_results(results)
+
+def _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, ray_evaluators, batch_size):
+    """Ray distributed evaluation"""
+    # Initialize Ray if not already done
+    if not ray.is_initialized():
+        ray.init(address='auto', ignore_reinit_error=True)
+    
+    # Create evaluator actors
+    evaluators = [RayOllamaEvaluator.remote() for _ in range(ray_evaluators)]
+    
+    # Prepare data batches
+    data = list(zip(questions, answers, som_contexts, cosine_contexts))
+    batches = [data[i:i + batch_size] for i in range(0, len(data), batch_size)]
+    
+    # Distribute work across evaluators
+    futures = []
+    for i, batch in enumerate(batches):
+        evaluator = evaluators[i % len(evaluators)]
+        future = evaluator.evaluate_batch.remote(batch)
+        futures.append(future)
+    
+    # Collect results
+    print(f"Processing {len(batches)} batches with {len(evaluators)} evaluators...")
+    results = []
+    for future in tqdm(ray.get(futures), desc="Collecting results"):
+        results.extend(future)
+    
+    return _process_results(results)
+
+def _process_results(results):
+    """Process evaluation results and calculate metrics"""
     # Convert to DataFrame
     df = pd.DataFrame(results)
     
@@ -268,12 +351,26 @@ def main():
                        help='Number of parallel workers')
     parser.add_argument('--model', type=str, default='llama3:latest',
                        help='Ollama model to use')
+    parser.add_argument('--use_ray', action='store_true',
+                       help='Use Ray for distributed evaluation')
+    parser.add_argument('--ray_evaluators', type=int, default=8,
+                       help='Number of Ray evaluator actors (only with --use_ray)')
+    parser.add_argument('--batch_size', type=int, default=10,
+                       help='Batch size for Ray evaluation (only with --use_ray)')
     
     args = parser.parse_args()
     
     print("="*60)
     print("SCALE UP EVALUATION WITH ACTUAL DATA")
     print("="*60)
+    
+    # Check Ray availability
+    if args.use_ray and not RAY_AVAILABLE:
+        print("Warning: Ray is not available. Falling back to standard evaluation.")
+        args.use_ray = False
+    
+    if args.use_ray:
+        print(f"Ray distributed evaluation enabled with {args.ray_evaluators} evaluators")
     
     # Load Q&A data
     questions, answers = load_qa_data(args.qa_file)
@@ -323,7 +420,11 @@ def main():
     
     # Run evaluation
     df, som_cm, cosine_cm, som_metrics, cosine_metrics = evaluate_context_retrieval(
-        questions, answers, som_contexts, cosine_contexts, max_workers=args.workers
+        questions, answers, som_contexts, cosine_contexts, 
+        max_workers=args.workers,
+        use_ray=args.use_ray,
+        ray_evaluators=args.ray_evaluators,
+        batch_size=args.batch_size
     )
     
     # Print results

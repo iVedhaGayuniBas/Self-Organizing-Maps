@@ -200,3 +200,4 @@ api_keys.txt
 *.bak
 *.backup
 *~ 
+backup/
