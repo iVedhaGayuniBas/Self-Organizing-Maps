@@ -22,7 +22,7 @@ except ImportError:
 
 # --- CONFIGURATION ---
 INPUT_FILE = "Self-Organizing-Maps/questions_answers.xlsx"   # Your Excel file
-OUTPUT_FILE = "Self-Organizing-Maps/retrieved_contexts.csv"  # Where to save results
+OUTPUT_FILE = "results/retrieved_contexts.csv"  # Where to save results
 NUM_CONTEXTS = 5                         # Number of contexts to generate for each method
 MAX_QUESTIONS = 5000                     # Limit for testing
 COHERE_API_KEY = "KMgAyxtG2SjcOkLRvGJpS0ZIYk34RCEKtjs5AMPp"
@@ -234,7 +234,7 @@ def retrieve_cosine_contexts(question_embedding):
     context, scores = get_cosine_context(question_embedding.reshape(1, -1), docs, NUM_CONTEXTS)
     return context
 
-def generate_contexts(input_path: str, output_path: str):
+def generate_contexts(input_path: str, output_path: str = "results/retrieved_contexts.csv"):
     """Main function to generate contexts for all questions"""
     if not os.path.exists(input_path):
         print(f"Excel file not found: {input_path}")

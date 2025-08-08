@@ -16,7 +16,7 @@ datasets>=2.14.0
 torch>=2.0.0
 
 # SOM implementation
-sompy>=1.0.0
+sompy>=0.1.1
 
 # Optional distributed computing (install with: pip install ray[default])
 ray[default]>=2.8.0

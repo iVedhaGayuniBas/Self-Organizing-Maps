@@ -273,7 +273,7 @@ def _process_results(results):
     
     return df, som_cm, cosine_cm, som_metrics, cosine_metrics
 
-def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: str = "scaled_comparison_chart.png"):
+def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: str = "results/scaled_comparison_chart.png"):
     """Create a bar chart comparing SOM vs Cosine metrics"""
     metrics = ['Precision', 'Recall', 'F1 Score']
     som_values = [som_metrics[metric] for metric in metrics]
