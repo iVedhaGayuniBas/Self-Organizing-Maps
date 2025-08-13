@@ -201,3 +201,6 @@ api_keys.txt
 *.backup
 *~ 
 backup/
+sompy/
+sompy_local/
+results/

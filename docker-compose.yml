@@ -21,7 +21,7 @@ services:
       - ray-head
     command: tail -f /dev/null  # Keep container running
 
-  # Ray cluster head node
+  # Ray cluster head node, pull it from Dockerhub instead
   ray-head:
     build:
       context: .

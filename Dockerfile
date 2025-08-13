@@ -24,18 +24,14 @@ COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir -r requirements.txt
 
-
+# Running as root
+RUN chmod -R 777 /app
 # Copy all project files into /app
 COPY . /app
-
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app && \
-    chown -R app:app /app
-USER app
 
 # Expose port for Ray dashboard or web services
 EXPOSE 8000
 
 # Entrypoint for running both scripts in parallel and saving results in the results directory
 ENTRYPOINT ["bash", "-c"]
-CMD ["python3 generate_contexts.py & python3 scale_up_evaluation.py & wait"]
+CMD ["python3 generate_contexts.py && python3 scale_up_evaluation.py"]

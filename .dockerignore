@@ -37,7 +37,6 @@ logs/
 .tox/
 
 # Large data files (copy manually to data/ if needed)
-*.xlsx
 *.csv
 *.pickle
 *.pkl
@@ -63,3 +62,5 @@ node_modules/
 .env.local
 .env.production
 .env.test
+
+backup/

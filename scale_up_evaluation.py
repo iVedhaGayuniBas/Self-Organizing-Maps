@@ -249,26 +249,53 @@ def _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, ray_ev
     return _process_results(results)
 
 def _process_results(results):
-    """Process evaluation results and calculate metrics"""
+    """Process evaluation results and calculate metrics according to user's definitions"""
     # Convert to DataFrame
     df = pd.DataFrame(results)
     
-    # Calculate confusion matrices
-    actual = (df['answer'].str.strip() != "").astype(int)
-    som_cm = confusion_matrix(actual, df['som_contains_answer'])
-    cosine_cm = confusion_matrix(actual, df['cosine_contains_answer'])
+    # Since we always attempt retrieval, we can calculate:
+    total_questions = len(df)
+    
+    # Determine which questions have good contexts available
+    # If either method found a good context, we know good contexts exist for that question
+    questions_with_good_contexts = (df['som_contains_answer'] | df['cosine_contains_answer']).sum()
+    
+    # For SOM method
+    som_tp = df['som_contains_answer'].sum()  # SOM found good contexts
+    som_fp = total_questions - som_tp  # SOM retrieved bad contexts 
+    # FN: Questions where good contexts exist (either method found them) but SOM missed them
+    som_fn = df[df['cosine_contains_answer'] & ~df['som_contains_answer']].shape[0]
+    
+    # For Cosine method  
+    cosine_tp = df['cosine_contains_answer'].sum()  # Cosine found good contexts
+    cosine_fp = total_questions - cosine_tp  # Cosine retrieved bad contexts
+    # FN: Questions where good contexts exist (either method found them) but Cosine missed them  
+    cosine_fn = df[df['som_contains_answer'] & ~df['cosine_contains_answer']].shape[0]
+    
+    # Calculate metrics using the standard formulas
+    som_precision = som_tp / (som_tp + som_fp) if (som_tp + som_fp) > 0 else 0
+    som_recall = som_tp / (som_tp + som_fn) if (som_tp + som_fn) > 0 else 0
+    som_f1 = 2 * (som_precision * som_recall) / (som_precision + som_recall) if (som_precision + som_recall) > 0 else 0
+    
+    cosine_precision = cosine_tp / (cosine_tp + cosine_fp) if (cosine_tp + cosine_fp) > 0 else 0
+    cosine_recall = cosine_tp / (cosine_tp + cosine_fn) if (cosine_tp + cosine_fn) > 0 else 0
+    cosine_f1 = 2 * (cosine_precision * cosine_recall) / (cosine_precision + cosine_recall) if (cosine_precision + cosine_recall) > 0 else 0
+    
+    # Create confusion matrices
+    som_cm = np.array([[0, som_fp], [som_fn, som_tp]])
+    cosine_cm = np.array([[0, cosine_fp], [cosine_fn, cosine_tp]])
 
-    # Calculate metrics
+    # Package metrics
     som_metrics = {
-        'Precision': precision_score(actual, df['som_contains_answer'], zero_division=0),
-        'Recall': recall_score(df['som_contains_answer'], df['som_contains_answer'], zero_division=0),
-        'F1 Score': f1_score(df['som_contains_answer'], df['som_contains_answer'], zero_division=0)
+        'Precision': som_precision,
+        'Recall': som_recall,
+        'F1 Score': som_f1
     }
     
     cosine_metrics = {
-        'Precision': precision_score(actual, df['cosine_contains_answer'], zero_division=0),
-        'Recall': recall_score(df['cosine_contains_answer'], df['cosine_contains_answer'], zero_division=0),
-        'F1 Score': f1_score(df['cosine_contains_answer'], df['cosine_contains_answer'], zero_division=0)
+        'Precision': cosine_precision,
+        'Recall': cosine_recall,
+        'F1 Score': cosine_f1
     }
     
     return df, som_cm, cosine_cm, som_metrics, cosine_metrics
@@ -343,7 +370,7 @@ def main():
     parser = argparse.ArgumentParser(description='Scale up context evaluation with actual data')
     parser.add_argument('--qa_file', type=str, default='questions_answers.xlsx', 
                        help='Path to Excel file with questions and answers')
-    parser.add_argument('--csv_file', type=str, default='wikipedia_context_comparison.csv',
+    parser.add_argument('--csv_file', type=str, default='results/retrieved_contexts.csv',
                        help='Path to CSV file with notebook results (alternative to context_file)')
     parser.add_argument('--max_questions', type=int, default=5000,
                        help='Maximum number of questions to evaluate')
@@ -431,7 +458,8 @@ def main():
     print_evaluation_summary(df, som_metrics, cosine_metrics)
     
     # Create visualization
-    create_comparison_chart(som_metrics, cosine_metrics)
+    chart_file = f"results/scaled_comparison_chart_{len(questions)}_questions.png"
+    create_comparison_chart(som_metrics, cosine_metrics, chart_file)
     
     # Save results
     results_file = f"scaled_evaluation_results_{len(questions)}_questions.csv"

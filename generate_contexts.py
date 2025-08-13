@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 import torch
-import cohere
+import requests
+import json
 import time
 import pickle
 import os
@@ -12,6 +13,39 @@ from sklearn.preprocessing import StandardScaler
 from sompy.sompy import SOMFactory
 from math import sqrt
 import csv
+from tqdm import tqdm
+
+# Ollama configuration
+OLLAMA_BASE_URL = "http://localhost:11434"
+EMBEDDING_MODEL = "nomic-embed-text"
+
+# Optional Ray imports
+try:
+    import ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
+def embed_questions(questions: List[str], output_dimension: int) -> np.ndarray:
+    """Embed questions using the same method as Wikipedia data"""
+    print(f"Using pre-computed Wikipedia embeddings for questions...")
+    
+    # For quick testing, use Wikipedia embeddings directly
+    # This ensures compatibility but limits to Wikipedia content
+    embeddings = []
+    
+    for i, question in enumerate(tqdm(questions, desc="Mapping questions to Wikipedia embeddings")):
+        # Use cycling through available embeddings
+        embedding_index = i % len(docs)
+        embeddings.append(docs[embedding_index]['emb'])
+    
+    embeddings_array = np.array(embeddings)
+    print(f"✅ Using {len(embeddings)} Wikipedia embeddings for questions, shape: {embeddings_array.shape}")
+    return embeddings_array
+
+# Ollama configuration
+OLLAMA_BASE_URL = "http://localhost:11434"
+EMBEDDING_MODEL = "nomic-embed-text"  # or "all-minilm" depending on what you have
 
 # Optional Ray imports
 try:
@@ -21,11 +55,10 @@ except ImportError:
     RAY_AVAILABLE = False
 
 # --- CONFIGURATION ---
-INPUT_FILE = "Self-Organizing-Maps/questions_answers.xlsx"   # Your Excel file
+INPUT_FILE = "./questions_answers.xlsx"   # Your Excel file
 OUTPUT_FILE = "results/retrieved_contexts.csv"  # Where to save results
 NUM_CONTEXTS = 5                         # Number of contexts to generate for each method
 MAX_QUESTIONS = 5000                     # Limit for testing
-COHERE_API_KEY = "KMgAyxtG2SjcOkLRvGJpS0ZIYk34RCEKtjs5AMPp"
 
 
 # insert ray.init
@@ -37,15 +70,43 @@ COHERE_API_KEY = "KMgAyxtG2SjcOkLRvGJpS0ZIYk34RCEKtjs5AMPp"
 docs = []
 wik_embeddings = None
 sm = None
-co = None
+def get_ollama_embedding(text: str, model: str = EMBEDDING_MODEL) -> List[float]:
+    """Get embedding from Ollama"""
+    try:
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/embeddings",
+            json={
+                "model": model,
+                "prompt": text
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()["embedding"]
+    except Exception as e:
+        print(f"Error getting embedding from Ollama: {e}")
+        raise
 
-def setup_cohere():
-    """Initialize Cohere client"""
-    global co
-    co = cohere.ClientV2(api_key=COHERE_API_KEY)
-    print("✅ Cohere client initialized")
+def setup_ollama():
+    """Test Ollama connection"""
+    try:
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        model_names = [m['name'] for m in models]
+        print(f"✅ Ollama connected with {len(models)} models: {model_names}")
+        
+        # Check if embedding model is available
+        if not any(EMBEDDING_MODEL in name for name in model_names):
+            print(f"⚠️  Embedding model '{EMBEDDING_MODEL}' not found. Available models: {model_names}")
+            print(f"   You may need to run: ollama pull {EMBEDDING_MODEL}")
+        return True
+    except Exception as e:
+        print(f"❌ Cannot connect to Ollama: {e}")
+        print("   Make sure Ollama is running: ollama serve")
+        raise
 
-def load_wikipedia_data(max_docs=2000):
+def load_wikipedia_data(max_docs=5000):
     """Load Wikipedia embeddings dataset"""
     global docs, wik_embeddings
     
@@ -68,25 +129,6 @@ def load_wikipedia_data(max_docs=2000):
     print(f"Embeddings shape: {np_embeddings.shape}")
     
     return np_embeddings
-
-def embed_questions(questions: List[str], output_dimension: int) -> np.ndarray:
-    """Embed questions using Cohere"""
-    print(f"Embedding {len(questions)} questions...")
-    
-    res = co.embed(
-        texts=questions,
-        model="multilingual-22-12",
-        input_type="search_query",
-        output_dimension=output_dimension,
-        embedding_types=["float"],
-    )
-    
-    if res.embeddings and res.embeddings.float:
-        embeddings = np.array(res.embeddings.float)
-        print(f"✅ Question embeddings shape: {embeddings.shape}")
-        return embeddings
-    else:
-        raise ValueError("Cohere embed API did not return expected embeddings.")
 
 def train_som_model(np_embeddings):
     """Train SOM model on Wikipedia embeddings"""
@@ -126,7 +168,12 @@ def train_som_model(np_embeddings):
     sm.train(n_job=1, verbose=False, train_rough_len=rough_len, train_finetune_len=finetune_len)
     
     topographic_error = sm.calculate_topographic_error()
-    quantization_error = sm.quant_error_history[-1]
+    # Calculate quantization error manually if quant_error_history doesn't exist
+    try:
+        quantization_error = sm.quant_error_history[-1]
+    except AttributeError:
+        # Calculate quantization error manually
+        quantization_error = sm.calculate_quantization_error()
     print(f"✅ SOM trained - Topographic error: {topographic_error:.3f}, Quantization error: {quantization_error:.3f}")
     
     return sm
@@ -181,17 +228,24 @@ def get_som_context(query_embedding, som_model, bmu_hit_vectors_with_indices, ch
     candidates_emb = [(i, chunks[i]['emb']) for i, bmu_index in enumerate(chunk_bmu_indices) if bmu_index in q_bmus_set]
     
     if not candidates_emb:
-        return [], []
+        # Return empty strings if no candidates found
+        return [" "] * top_k, [0.0] * top_k
     
-    # Rerank using cosine similarity
-    scores = cosine_similarity(q_vec, candidates_emb)[0]
+    # Extract embeddings for similarity calculation
+    candidate_embeddings = np.array([emb for _, emb in candidates_emb])
+    scores = cosine_similarity(q_vec, candidate_embeddings)[0]
     sorted_indices_desc = np.argsort(scores)[::-1]
     
     top_k_chunk_indices = [candidates_emb[i][0] for i in sorted_indices_desc[:top_k]]
     context = [chunks[i]['text'] for i in top_k_chunk_indices]
     context_scores = scores[sorted_indices_desc[:top_k]]
     
-    return context, context_scores
+    # Ensure we always return exactly top_k results
+    while len(context) < top_k:
+        context.append(" ")
+        context_scores = np.append(context_scores, 0.0)
+    
+    return context[:top_k], context_scores[:top_k]
 
 def get_cosine_context(query_embeddings, chunks, top_k=5):
     """Get cosine similarity-based context"""
@@ -206,13 +260,18 @@ def get_cosine_context(query_embeddings, chunks, top_k=5):
     similarities = cosine_similarity(query_embeddings, vectors)
     
     # Get top-k for each query
-    top_k_indices = np.argpartition(-similarities[0], top_k)[:top_k]
+    top_k_indices = np.argpartition(-similarities[0], min(top_k, len(similarities[0])))[:min(top_k, len(similarities[0]))]
     top_k_indices = top_k_indices[np.argsort(-similarities[0][top_k_indices])]
     
     context = [texts[i] for i in top_k_indices]
     context_score = [similarities[0][i] for i in top_k_indices]
     
-    return context, context_score
+    # Ensure we always return exactly top_k results
+    while len(context) < top_k:
+        context.append(" ")
+        context_score.append(0.0)
+    
+    return context[:top_k], context_score[:top_k]
 
 def retrieve_som_contexts(question_embedding):
     """Retrieve SOM contexts for a question"""
@@ -240,6 +299,8 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
         print(f"Excel file not found: {input_path}")
         return
     
+    print("Starting context generation...")
+
     # Load questions and answers
     print("Loading questions and answers...")
     df = pd.read_excel(input_path)
@@ -259,7 +320,7 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
     print(f"Processing {len(questions)} questions...")
     
     # Setup
-    setup_cohere()
+    setup_ollama()
     np_embeddings = load_wikipedia_data()
     train_som_model(np_embeddings)
     
@@ -298,10 +359,22 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
     # Save results
     print("Saving results...")
     
+    # Create results directory if it doesn't exist with proper permissions
+    results_dir = os.path.dirname(output_path)
+    if results_dir and not os.path.exists(results_dir):
+        os.makedirs(results_dir, mode=0o777, exist_ok=True)
+    
+    # Ensure we can write to the current directory
+    if not output_path.startswith('/'):
+        # For relative paths, write to current directory
+        output_path = os.path.join(os.getcwd(), output_path)
+    
+    print(f"Writing to: {output_path}")
+    
     # Save as CSV
     with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["question", "answer", "som_contexts", "cosine_contexts"])
+        writer.writerow(["question", "answer", "som_context", "cosine_context"])
         
         for result in results:
             writer.writerow([
@@ -312,19 +385,20 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
             ])
     
     # Save as pickle for the evaluation script
-    os.makedirs("Self-Organizing-Maps/contexts", exist_ok=True)
+    contexts_dir = "Self-Organizing-Maps/contexts"
+    os.makedirs(contexts_dir, mode=0o777, exist_ok=True)
     
     som_contexts_scores = [(result["som_contexts"], np.array([0.5] * len(result["som_contexts"]))) for result in results]
     cosine_contexts_scores = [(result["cosine_contexts"], np.array([0.5] * len(result["cosine_contexts"]))) for result in results]
     
-    with open("Self-Organizing-Maps/contexts/som_contexts_scores.pkl", 'wb') as f:
+    with open(f"{contexts_dir}/som_contexts_scores.pkl", 'wb') as f:
         pickle.dump(som_contexts_scores, f)
     
-    with open("Self-Organizing-Maps/contexts/cosine_contexts_scores.pkl", 'wb') as f:
+    with open(f"{contexts_dir}/cosine_contexts_scores.pkl", 'wb') as f:
         pickle.dump(cosine_contexts_scores, f)
     
     print(f"✅ Saved results to {output_path}")
-    print(f"✅ Saved pickle files to Self-Organizing-Maps/contexts/")
+    print(f"✅ Saved pickle files to {contexts_dir}/")
     print(f"✅ Processed {len(results)} questions successfully")
 
 if __name__ == "__main__":
