@@ -384,6 +384,8 @@ def main():
                        help='Number of Ray evaluator actors (only with --use_ray)')
     parser.add_argument('--batch_size', type=int, default=10,
                        help='Batch size for Ray evaluation (only with --use_ray)')
+    parser.add_argument('--sampling', type=str, default='random', choices=['sequential', 'random'],
+                       help='Question sampling method: sequential (first N) or random')
     
     args = parser.parse_args()
     
@@ -408,8 +410,21 @@ def main():
     # Limit to max_questions
     if len(questions) > args.max_questions:
         print(f"Limiting evaluation to {args.max_questions} questions (from {len(questions)} total)")
-        questions = questions[:args.max_questions]
-        answers = answers[:args.max_questions]
+        
+        if args.sampling == 'random':
+            # Random sampling for balanced difficulty distribution
+            import random
+            random.seed(42)  # For reproducible results
+            indices = random.sample(range(len(questions)), args.max_questions)
+            indices.sort()  # Keep some order for consistency
+            questions = [questions[i] for i in indices]
+            answers = [answers[i] for i in indices]
+            print(f"Using random sampling (seed=42) for representative evaluation")
+        else:
+            # Sequential sampling (first N questions)
+            questions = questions[:args.max_questions]
+            answers = answers[:args.max_questions]
+            print(f"Using sequential sampling (first {args.max_questions} questions)")
     
     # Load contexts - try pickle first, then CSV
     som_contexts, cosine_contexts = [], []
