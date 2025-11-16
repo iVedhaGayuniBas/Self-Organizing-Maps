@@ -59,6 +59,7 @@ INPUT_FILE = "./questions_answers.xlsx"   # Your Excel file
 OUTPUT_FILE = "results/retrieved_contexts.csv"  # Where to save results
 NUM_CONTEXTS = 5                         # Number of contexts to generate for each method
 MAX_QUESTIONS = 5000                     # Limit for testing
+MAX_CHUNKS = 5000                        # Limit for Wikipedia chunks
 
 
 # insert ray.init
@@ -106,7 +107,7 @@ def setup_ollama():
         print("   Make sure Ollama is running: ollama serve")
         raise
 
-def load_wikipedia_data(max_docs=5000):
+def load_wikipedia_data(max_chunks=5000):
     """Load Wikipedia embeddings dataset"""
     global docs, wik_embeddings
     
@@ -119,7 +120,7 @@ def load_wikipedia_data(max_docs=5000):
     for doc in docs_stream:
         docs.append(doc)
         wik_embeddings.append(doc['emb'])
-        if len(docs) >= max_docs:
+        if len(docs) >= max_chunks:
             break
     
     wik_embeddings = torch.tensor(wik_embeddings)
@@ -195,9 +196,9 @@ def find_closest_hit_per_bmu(sm):
     bmu_first_hit_vectors = [data[int(i)] if not np.isnan(i) else None for i in closest_indices]
     return closest_indices, bmu_first_hit_vectors
 
-def cosine_bmu_retrieve(normed_query_embedding, som_model, bmu_hit_vectors_with_indices, top_k=5):
+def find_query_k_bmus_cosine(normed_query_embedding, som_model, bmu_first_hit_vectors_with_indices, top_k=5):
     """Retrieve top BMUs using cosine similarity"""
-    filtered = [(i, v) for i, v in bmu_hit_vectors_with_indices if v is not None and not np.isnan(v).any()]
+    filtered = [(i, v) for i, v in bmu_first_hit_vectors_with_indices if v is not None and not np.isnan(v).any()]
     if len(filtered) == 0:
         raise ValueError("No valid BMU vectors available for similarity comparison.")
     
@@ -212,16 +213,16 @@ def cosine_bmu_retrieve(normed_query_embedding, som_model, bmu_hit_vectors_with_
     
     return selected_bmu_index
 
-def normalize_reshape(query_embedding, sm):
+def normalize_reshape_query(query_embedding, sm): #####Find a different way 
     """Normalize and reshape query embedding"""
     vec = query_embedding.reshape(1, -1)
     normed_query_embedding = sm._normalizer.normalize_by(sm.data_raw, vec)
     return normed_query_embedding
 
-def get_som_context(query_embedding, som_model, bmu_hit_vectors_with_indices, chunks, top_k=5, bmu_k=5):
+def get_query_context_som_with_scores(query_embedding, som_model, bmu_hit_vectors_with_indices, chunks, top_k=5, bmu_k=5):
     """Get SOM-based context for a query"""
-    q_vec = normalize_reshape(query_embedding, som_model)
-    q_bmus = cosine_bmu_retrieve(q_vec, som_model, bmu_hit_vectors_with_indices, bmu_k)
+    q_vec = normalize_reshape_query(query_embedding, som_model)
+    q_bmus = find_query_k_bmus_cosine(q_vec, som_model, bmu_hit_vectors_with_indices, bmu_k)
     
     chunk_bmu_indices = som_model._bmu[0].astype(int)
     q_bmus_set = set(q_bmus)
@@ -247,7 +248,7 @@ def get_som_context(query_embedding, som_model, bmu_hit_vectors_with_indices, ch
     
     return context[:top_k], context_scores[:top_k]
 
-def get_cosine_context(query_embeddings, chunks, top_k=5):
+def get_query_context_cosine_with_scores(query_embeddings, chunks, top_k=5): ##change chunks into wiki emb
     """Get cosine similarity-based context"""
     vectors = np.array([chunk['emb'] for chunk in chunks])
     texts = [chunk['text'] for chunk in chunks]
@@ -273,7 +274,7 @@ def get_cosine_context(query_embeddings, chunks, top_k=5):
     
     return context[:top_k], context_score[:top_k]
 
-def retrieve_som_contexts(question_embedding):
+def retrieve_final_contexts_som(question_embedding):
     """Retrieve SOM contexts for a question"""
     global sm, docs
     
@@ -282,19 +283,20 @@ def retrieve_som_contexts(question_embedding):
     
     bmu_first_hit_indices, bmu_first_hit_vectors = find_closest_hit_per_bmu(sm)
     bmu_hit_vectors_with_indices = [(i, v) for i, v in enumerate(bmu_first_hit_vectors)]
-    
-    context, scores = get_som_context(question_embedding, sm, bmu_hit_vectors_with_indices, docs, NUM_CONTEXTS)
+
+    context, scores = get_query_context_som_with_scores(question_embedding, sm, bmu_hit_vectors_with_indices, docs, NUM_CONTEXTS)
     return context
 
-def retrieve_cosine_contexts(question_embedding):
+def retrieve_final_contexts_cosine(question_embedding):
     """Retrieve cosine similarity contexts for a question"""
     global docs
     
-    context, scores = get_cosine_context(question_embedding.reshape(1, -1), docs, NUM_CONTEXTS)
+    context, scores = get_query_context_cosine_with_scores(question_embedding.reshape(1, -1), docs, NUM_CONTEXTS)
     return context
 
-def generate_contexts(input_path: str, output_path: str = "results/retrieved_contexts.csv"):
+def find_contexts_all_questions(input_path: str, output_path: str = "results/retrieved_contexts.csv", max_chunks: int = MAX_CHUNKS, max_questions: int = MAX_QUESTIONS):
     """Main function to generate contexts for all questions"""
+    
     if not os.path.exists(input_path):
         print(f"Excel file not found: {input_path}")
         return
@@ -312,16 +314,16 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
     answers = df["answer"].astype(str).str.strip().tolist()
     
     # Limit for testing
-    if len(questions) > MAX_QUESTIONS:
-        questions = questions[:MAX_QUESTIONS]
-        answers = answers[:MAX_QUESTIONS]
-        print(f"Limited to first {MAX_QUESTIONS} questions for testing")
-    
+    if len(questions) > max_questions:
+        questions = questions[:max_questions]
+        answers = answers[:max_questions]
+        print(f"Limited to first {max_questions} questions for testing")
+
     print(f"Processing {len(questions)} questions...")
     
     # Setup
     setup_ollama()
-    np_embeddings = load_wikipedia_data()
+    np_embeddings = load_wikipedia_data(max_chunks=max_chunks)
     train_som_model(np_embeddings)
     
     # Embed all questions
@@ -333,8 +335,8 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
         print(f"Processing question {i+1}/{len(questions)}: {question[:50]}...")
         
         try:
-            som_contexts = retrieve_som_contexts(embedding)
-            cosine_contexts = retrieve_cosine_contexts(embedding)
+            som_contexts = retrieve_final_contexts_som(embedding)
+            cosine_contexts = retrieve_final_contexts_cosine(embedding)
             
             results.append({
                 "question": question,
@@ -371,21 +373,21 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
     
     print(f"Writing to: {output_path}")
     
-    # Save as CSV
-    with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["question", "answer", "som_context", "cosine_context"])
+    # # Save as CSV
+    # with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
+    #     writer = csv.writer(csvfile)
+    #     writer.writerow(["question", "answer", "som_context", "cosine_context"])
         
-        for result in results:
-            writer.writerow([
-                result["question"],
-                result["answer"],
-                str(result["som_contexts"]),
-                str(result["cosine_contexts"])
-            ])
+    #     for result in results:
+    #         writer.writerow([
+    #             result["question"],
+    #             result["answer"],
+    #             str(result["som_contexts"]),
+    #             str(result["cosine_contexts"])
+    #         ])
     
     # Save as pickle for the evaluation script
-    contexts_dir = "Self-Organizing-Maps/contexts"
+    contexts_dir = "contexts"
     os.makedirs(contexts_dir, mode=0o777, exist_ok=True)
     
     som_contexts_scores = [(result["som_contexts"], np.array([0.5] * len(result["som_contexts"]))) for result in results]
@@ -397,9 +399,28 @@ def generate_contexts(input_path: str, output_path: str = "results/retrieved_con
     with open(f"{contexts_dir}/cosine_contexts_scores.pkl", 'wb') as f:
         pickle.dump(cosine_contexts_scores, f)
     
-    print(f"✅ Saved results to {output_path}")
+    # print(f"✅ Saved results to {output_path}")
     print(f"✅ Saved pickle files to {contexts_dir}/")
     print(f"✅ Processed {len(results)} questions successfully")
 
 if __name__ == "__main__":
-    generate_contexts(INPUT_FILE, OUTPUT_FILE) 
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate contexts from Wikipedia for Q&A")
+    parser.add_argument("--input", "-i", type=str, default=INPUT_FILE,
+                        help="Path to questions Excel file (default: %(default)s)")
+    parser.add_argument("--output", "-o", type=str, default=OUTPUT_FILE,
+                        help="Path for output CSV (default: %(default)s)")
+    parser.add_argument("--max_chunks", "-m", type=int, default=MAX_CHUNKS,
+                        help="Number of Wikipedia chunks to load for SOM training (default: %(default)s)")
+    parser.add_argument("--max_questions", "-q", type=int, default=MAX_QUESTIONS,
+                        help="Limit number of questions to process (default: %(default)s)")
+    args = parser.parse_args()
+
+    # Use parsed args to call main function
+    find_contexts_all_questions(
+        input_path=args.input,
+        output_path=args.output,
+        max_chunks=args.max_chunks,
+        max_questions=args.max_questions
+    )
