@@ -18,7 +18,7 @@ datasets>=2.14.0
 torch>=2.0.0
 
 # SOM implementation
-sompy>=0.1.1
+git+https://github.com/GayuniBas2001/SOMPY_sevamoo.git@master
 
 # Optional distributed computing (install with: pip install ray[default])
 ray[default]>=2.8.0

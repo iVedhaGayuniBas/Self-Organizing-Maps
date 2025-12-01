@@ -13,10 +13,16 @@ Docker-containerized evaluation proving Self-Organizing Maps outperform cosine s
 # Build container
 sudo docker build -t sompy-container .
 
+# Generate wikipedia embeddings using Ollama : Shape (max_chunks,1024)
+sompy-container "python3 prepare_embeddings.py wiki --max_chunks 500 --use_ollama"
+
+# Generate question embeddings using Ollama : Shape (5537, 1024)
+sompy-container "python3 prepare_embeddings.py questions --input questions_answers.xlsx"
+
 # Generate contexts (one-time)
 sudo docker run --rm --gpus all --network host \
   -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts \
-  sompy-container "python3 generate_contexts.py"
+  sompy-container "python3 generate_contexts.py --max_chunks 500 --max_questions 500"
 
 # Run evaluation
 sudo docker run --rm --gpus all --network host \
@@ -136,7 +142,7 @@ sudo docker run --rm --gpus all --network host \
 2. **Build Docker images**:
    ```bash
    ./docker-setup.sh build
-   ```
+   ``` 
 
 3. **Start Ray cluster**:
    ```bash

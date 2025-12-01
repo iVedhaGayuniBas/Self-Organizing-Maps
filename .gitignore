@@ -202,3 +202,14 @@ api_keys.txt
 backup/
 sompy/
 sompy_local/
+
+# Generated runtime outputs and temporary evaluation artifacts
+# (ignore evaluation outputs, persisted embeddings, prompt/debug logs)
+results/
+evaluation_results_logs/
+evaluation_debug_prompts.jsonl
+evaluation_log.csv
+stored_embeddings/
+contexts/
+scaled_evaluation_results_*.csv
+scaled_metrics_*.json

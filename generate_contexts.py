@@ -26,21 +26,65 @@ try:
 except ImportError:
     RAY_AVAILABLE = False
 
-def embed_questions(questions: List[str], output_dimension: int) -> np.ndarray:
-    """Embed questions using the same method as Wikipedia data"""
-    print(f"Using pre-computed Wikipedia embeddings for questions...")
-    
-    # For quick testing, use Wikipedia embeddings directly
-    # This ensures compatibility but limits to Wikipedia content
+def embed_questions(questions: List[str]) -> np.ndarray:
+    """Load precomputed question embeddings from `stored_embeddings/question_embeddings.npy`.
+
+    Mapping strategy:
+    - If `stored_embeddings/questions.pkl` exists, map each input question to the stored question
+      by normalized exact match (strip + lower); if found, use that stored embedding.
+    - If a question is not found in the stored list, fall back to positional mapping: use the
+      embedding at the same index `i` (requires that the saved array is at least as long as
+      the number of questions requested).
+    - If no `questions.pkl` exists, positional mapping is used (index i -> embedding i).
+    """
+    print("Loading question embeddings from 'stored_embeddings/question_embeddings.npy'...")
+
+    emb_path = os.path.join("stored_embeddings", "question_embeddings.npy")
+    qlist_path = os.path.join("stored_embeddings", "questions.pkl")
+
+    if not os.path.isfile(emb_path):
+        raise FileNotFoundError(f"Question embeddings file not found: {emb_path}")
+
+    all_q_embs = np.load(emb_path)
+
+    stored_qs = None
+    if os.path.isfile(qlist_path):
+        with open(qlist_path, "rb") as f:
+            try:
+                stored_qs = pickle.load(f)
+            except Exception:
+                stored_qs = None
+
+    # Build mapping from normalized stored question -> index
+    mapping = {}
+    if stored_qs is not None:
+        for idx, q in enumerate(stored_qs):
+            try:
+                key = str(q).strip().lower()
+            except Exception:
+                key = str(q)
+            if key not in mapping:
+                mapping[key] = idx
+
     embeddings = []
-    
-    for i, question in enumerate(tqdm(questions, desc="Mapping questions to Wikipedia embeddings")):
-        # Use cycling through available embeddings
-        embedding_index = i % len(docs)
-        embeddings.append(docs[embedding_index]['emb'])
-    
-    embeddings_array = np.array(embeddings)
-    print(f"✅ Using {len(embeddings)} Wikipedia embeddings for questions, shape: {embeddings_array.shape}")
+    for i, question in enumerate(tqdm(questions, desc="Loading question embeddings")):
+        key = str(question).strip().lower()
+        idx = None
+
+        if stored_qs is not None and key in mapping:
+            idx = mapping[key]
+        else:
+            # fallback to positional mapping if possible
+            if i < len(all_q_embs):
+                idx = i
+            else:
+                raise IndexError(f"No stored embedding found for question index {i} and question not present in stored questions.")
+
+        emb = np.array(all_q_embs[idx])
+        embeddings.append(emb)
+
+    embeddings_array = np.vstack(embeddings)
+    print(f"✅ Loaded {embeddings_array.shape[0]} question embeddings, shape: {embeddings_array.shape}")
     return embeddings_array
 
 # Ollama configuration
@@ -110,25 +154,43 @@ def setup_ollama():
 def load_wikipedia_data(max_chunks=5000):
     """Load Wikipedia embeddings dataset"""
     global docs, wik_embeddings
-    
-    print("Loading Wikipedia dataset...")
-    docs_stream = load_dataset("Cohere/wikipedia-22-12-simple-embeddings", split="train", streaming=True)
-    
+    print("Loading Wikipedia dataset from 'stored_embeddings'...")
+
+    emb_path = os.path.join("stored_embeddings", "wiki_embeddings.npy")
+    docs_path = os.path.join("stored_embeddings", "wiki_docs.pkl")
+
+    if not os.path.isfile(emb_path):
+        raise FileNotFoundError(f"Embeddings file not found: {emb_path}")
+    if not os.path.isfile(docs_path):
+        raise FileNotFoundError(f"Docs pickle not found: {docs_path}")
+
+    # Load numpy embeddings and truncate to max_chunks
+    np_embeddings = np.load(emb_path)
+    if max_chunks is not None and len(np_embeddings) > max_chunks:
+        np_embeddings = np_embeddings[:max_chunks]
+
+    # Load docs pickle and truncate to max_chunks
+    with open(docs_path, "rb") as f:
+        loaded_docs = pickle.load(f)
+    if max_chunks is not None and len(loaded_docs) > max_chunks:
+        loaded_docs = loaded_docs[:max_chunks]
+
+    # Ensure global `docs` list contains dicts with at least 'text' and 'emb'
     docs = []
-    wik_embeddings = []
-    
-    for doc in docs_stream:
-        docs.append(doc)
-        wik_embeddings.append(doc['emb'])
-        if len(docs) >= max_chunks:
-            break
-    
-    wik_embeddings = torch.tensor(wik_embeddings)
-    np_embeddings = np.array(wik_embeddings)
-    
-    print(f"✅ Loaded {len(docs)} Wikipedia documents")
+    for i, item in enumerate(loaded_docs):
+        emb = np.array(np_embeddings[i])
+        if isinstance(item, dict):
+            d = item.copy()
+            d['emb'] = emb
+        else:
+            d = {'text': str(item), 'emb': emb}
+        docs.append(d)
+
+    wik_embeddings = torch.tensor(np_embeddings)
+
+    print(f"✅ Loaded {len(docs)} Wikipedia documents from 'stored_embeddings'")
     print(f"Embeddings shape: {np_embeddings.shape}")
-    
+
     return np_embeddings
 
 def train_som_model(np_embeddings):
@@ -327,7 +389,7 @@ def find_contexts_all_questions(input_path: str, output_path: str = "results/ret
     train_som_model(np_embeddings)
     
     # Embed all questions
-    question_embeddings = embed_questions(questions, np_embeddings.shape[1])
+    question_embeddings = embed_questions(questions)
     
     # Generate contexts
     results = []
@@ -371,20 +433,20 @@ def find_contexts_all_questions(input_path: str, output_path: str = "results/ret
         # For relative paths, write to current directory
         output_path = os.path.join(os.getcwd(), output_path)
     
-    print(f"Writing to: {output_path}")
+    # print(f"Writing to: {output_path}")
     
-    # # Save as CSV
-    # with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
-    #     writer = csv.writer(csvfile)
-    #     writer.writerow(["question", "answer", "som_context", "cosine_context"])
+    # Save as CSV
+    with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["question", "answer", "som_context", "cosine_context"])
         
-    #     for result in results:
-    #         writer.writerow([
-    #             result["question"],
-    #             result["answer"],
-    #             str(result["som_contexts"]),
-    #             str(result["cosine_contexts"])
-    #         ])
+        for result in results:
+            writer.writerow([
+                result["question"],
+                result["answer"],
+                str(result["som_contexts"]),
+                str(result["cosine_contexts"])
+            ])
     
     # Save as pickle for the evaluation script
     contexts_dir = "contexts"
