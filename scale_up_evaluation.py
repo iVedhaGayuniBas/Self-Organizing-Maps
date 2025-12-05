@@ -110,6 +110,76 @@ if RAY_AVAILABLE:
                 })
             return results
 
+def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: str = "results/scaled_comparison_chart.png"):
+    """Create a bar chart comparing SOM vs Cosine metrics"""
+    metrics = ['Accuracy', 'Precision', 'Recall', 'F1 Score']
+    som_values = [som_metrics[metric] for metric in metrics]
+    cosine_values = [cosine_metrics[metric] for metric in metrics]
+    
+    x = np.arange(len(metrics))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    patterns = [ "/" , "\\" , "|" , "-" , "+" , "x", "o", "O", ".", "*" ]
+
+    bars1 = ax.bar(x - width/2, som_values, width, label='SOMpy', color='red', edgecolor='black', alpha=0.8, hatch=patterns[0])
+    bars2 = ax.bar(x + width/2, cosine_values, width, label='Cosine Similarity', color='red', edgecolor='black', alpha=0.8, hatch=patterns[6])
+    
+    ax.set_xlabel('Metrics')
+    ax.set_ylabel('Score')
+    ax.set_title('SOMpy vs Cosine Similarity: Context Retrieval Performance')
+    ax.set_xticks(x)
+    ax.set_xticklabels(metrics)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.3f}',
+                       xy=(bar.get_x() + bar.get_width() / 2, height),
+                       xytext=(0, 3),
+                       textcoords="offset points",
+                       ha='center', va='bottom')
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"Chart saved as {save_path}")
+
+def print_evaluation_summary(df: pd.DataFrame, som_metrics: Dict, cosine_metrics: Dict):
+    """Print a summary of the evaluation results"""
+    print("\n" + "="*60)
+    print("EVALUATION SUMMARY")
+    print("="*60)
+    
+    print(f"\nTotal Questions Evaluated: {len(df)}")
+    
+    print(f"\nSOMpy Performance:")
+    print(f"  - Accuracy: {som_metrics['Accuracy']:.3f}")
+    print(f"  - Precision: {som_metrics['Precision']:.3f}")
+    print(f"  - Recall: {som_metrics['Recall']:.3f}")
+    print(f"  - F1 Score: {som_metrics['F1 Score']:.3f}")
+    print(f"  - Questions with correct context: {df['som_contains_answer'].sum()}")
+    
+    print(f"\nCosine Similarity Performance:")
+    print(f"  - Accuracy: {cosine_metrics['Accuracy']:.3f}") 
+    print(f"  - Precision: {cosine_metrics['Precision']:.3f}")
+    print(f"  - Recall: {cosine_metrics['Recall']:.3f}")
+    print(f"  - F1 Score: {cosine_metrics['F1 Score']:.3f}")
+    print(f"  - Questions with correct context: {df['cosine_contains_answer'].sum()}")
+    
+    # Calculate improvement
+    som_f1 = som_metrics['F1 Score']
+    cosine_f1 = cosine_metrics['F1 Score']
+    improvement = ((som_f1 - cosine_f1) / cosine_f1 * 100) if cosine_f1 > 0 else 0
+    
+    print(f"\nSOMpy vs Cosine Improvement:")
+    print(f"  - F1 Score Improvement: {improvement:.1f}%")
+    print(f"  - Absolute F1 Difference: {som_f1 - cosine_f1:.3f}")
+
 def _process_results(results):
     """Process evaluation results and calculate metrics according to user's definitions"""
     # Convert to DataFrame
@@ -165,87 +235,20 @@ def _process_results(results):
 
     # Package metrics
     som_metrics = {
+        'Accuracy': som_accuracy,
         'Precision': som_precision,
         'Recall': som_recall,
-        'F1 Score': som_f1,
-        'Accuracy': som_accuracy
+        'F1 Score': som_f1
     }
     
     cosine_metrics = {
+        'Accuracy': cosine_accuracy,
         'Precision': cosine_precision,
         'Recall': cosine_recall,
-        'F1 Score': cosine_f1,
-        'Accuracy': cosine_accuracy
+        'F1 Score': cosine_f1
     }
     
     return df, som_cm, cosine_cm, som_metrics, cosine_metrics
-
-def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: str = "results/scaled_comparison_chart.png"):
-    """Create a bar chart comparing SOM vs Cosine metrics"""
-    metrics = ['Precision', 'Recall', 'F1 Score', 'Accuracy']
-    som_values = [som_metrics[metric] for metric in metrics]
-    cosine_values = [cosine_metrics[metric] for metric in metrics]
-    
-    x = np.arange(len(metrics))
-    width = 0.35
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars1 = ax.bar(x - width/2, som_values, width, label='SOMpy', color='skyblue', alpha=0.8)
-    bars2 = ax.bar(x + width/2, cosine_values, width, label='Cosine Similarity', color='lightcoral', alpha=0.8)
-    
-    ax.set_xlabel('Metrics')
-    ax.set_ylabel('Score')
-    ax.set_title('SOMpy vs Cosine Similarity: Context Retrieval Performance')
-    ax.set_xticks(x)
-    ax.set_xticklabels(metrics)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Add value labels on bars
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            ax.annotate(f'{height:.3f}',
-                       xy=(bar.get_x() + bar.get_width() / 2, height),
-                       xytext=(0, 3),
-                       textcoords="offset points",
-                       ha='center', va='bottom')
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-    print(f"Chart saved as {save_path}")
-
-def print_evaluation_summary(df: pd.DataFrame, som_metrics: Dict, cosine_metrics: Dict):
-    """Print a summary of the evaluation results"""
-    print("\n" + "="*60)
-    print("EVALUATION SUMMARY")
-    print("="*60)
-    
-    print(f"\nTotal Questions Evaluated: {len(df)}")
-    
-    print(f"\nSOMpy Performance:")
-    print(f"  - Precision: {som_metrics['Precision']:.3f}")
-    print(f"  - Recall: {som_metrics['Recall']:.3f}")
-    print(f"  - F1 Score: {som_metrics['F1 Score']:.3f}")
-    print(f"  - Accuracy: {som_metrics['Accuracy']:.3f}")
-    print(f"  - Questions with correct context: {df['som_contains_answer'].sum()}")
-    
-    print(f"\nCosine Similarity Performance:")
-    print(f"  - Precision: {cosine_metrics['Precision']:.3f}")
-    print(f"  - Recall: {cosine_metrics['Recall']:.3f}")
-    print(f"  - F1 Score: {cosine_metrics['F1 Score']:.3f}")
-    print(f"  - Accuracy: {cosine_metrics['Accuracy']:.3f}") 
-    print(f"  - Questions with correct context: {df['cosine_contains_answer'].sum()}")
-    
-    # Calculate improvement
-    som_f1 = som_metrics['F1 Score']
-    cosine_f1 = cosine_metrics['F1 Score']
-    improvement = ((som_f1 - cosine_f1) / cosine_f1 * 100) if cosine_f1 > 0 else 0
-    
-    print(f"\nSOMpy vs Cosine Improvement:")
-    print(f"  - F1 Score Improvement: {improvement:.1f}%")
-    print(f"  - Absolute F1 Difference: {som_f1 - cosine_f1:.3f}")
 
 def evaluate_single_item(args: Tuple) -> Dict[str, Any]:
     question, answer, som_contexts, cosine_contexts, evaluator = args
@@ -429,7 +432,7 @@ def load_from_csv_results(csv_file: str) -> Tuple[List[str], List[str], List[Lis
 def main():
     """Main function to run the scaled evaluation"""
     parser = argparse.ArgumentParser(description='Scale up context evaluation with actual data')
-    parser.add_argument('--qa_file', type=str, default='results/retrieved_contexts.csv', 
+    parser.add_argument('--qa_file', type=str, default='contexts/retrieved_contexts.pkl', 
                        help='Path to Excel file with questions and answers')
     parser.add_argument('--csv_file', type=str, default='results/retrieved_contexts.csv',
                        help='Path to CSV file with notebook results (alternative to context_file)')
@@ -464,8 +467,20 @@ def main():
 
     loaded = False
 
-    # # Load contexts - try several pickle locations first, then CSV
-    # som_contexts, cosine_contexts = [], []
+    # Load questions, answers, and contexts from pickle file
+    if args.qa_file and os.path.exists(args.qa_file):
+        try:
+            print(f"Loading questions, answers and contexts from pickle: {args.qa_file}")
+            with open(args.qa_file, 'rb') as f:
+                retrieved = pickle.load(f)
+            questions = [item["question"] for item in retrieved]
+            answers = [item["answer"] for item in retrieved]
+            som_contexts = [item["som_contexts"] for item in retrieved]
+            cosine_contexts = [item["cosine_contexts"] for item in retrieved]
+            print(f"Loaded {len(questions)} questions, answers and contexts from pickle: {args.qa_file}")
+            loaded = True
+        except Exception as e:
+            print(f"Error loading pickle file {args.qa_file}: {e}")
 
     # # Potential pickle locations (project root and Self-Organizing-Maps subdir)
     # possible_paths = [
@@ -494,8 +509,9 @@ def main():
 
     # Fallback to CSV if pickle loading failed
     if not loaded and args.csv_file and os.path.exists(args.csv_file):
+        print(f"Loading questions, answers and contexts from CSV: {args.csv_file}")
         questions, answers, som_contexts, cosine_contexts = load_from_csv_results(args.csv_file)
-        print(f"Loaded questions, answers and contexts from CSV: {args.csv_file}")
+        print(f"Loaded {len(questions)} questions, answers and contexts from CSV: {args.csv_file}")
         if not questions or not answers or not som_contexts or not cosine_contexts:
             print("Failed to load Q&A data and contexts. Exiting.")
             return
@@ -544,10 +560,16 @@ def main():
     chart_file = f"evaluation_results_logs/scaled_comparison_chart_{len(questions)}_questions.png"
     create_comparison_chart(som_metrics, cosine_metrics, chart_file)
     
-    # Save results
+    # Save results : CSV
     results_file = f"evaluation_results_logs/scaled_evaluation_results_{len(questions)}_questions.csv"
     df.to_csv(results_file, index=False)
     print(f"\nDetailed results saved to {results_file}")
+
+    # Save results : pickle
+    results_pickle_file = f"evaluation_results_logs/scaled_evaluation_results_{len(questions)}_questions.pkl"
+    with open(results_pickle_file, 'wb') as f:
+        pickle.dump(df, f)
+    print(f"Detailed results pickle saved to {results_pickle_file}")
     
     # Save metrics
     metrics_file = f"evaluation_results_logs/scaled_metrics_{len(questions)}_questions.json"

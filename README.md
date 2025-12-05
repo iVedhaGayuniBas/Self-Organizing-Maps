@@ -22,7 +22,7 @@ sompy-container "python3 prepare_embeddings.py questions --input questions_answe
 # Generate contexts (one-time)
 sudo docker run --rm --gpus all --network host \
   -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts \
-  sompy-container "python3 generate_contexts.py --max_chunks 500 --max_questions 500"
+  sompy-container "python3 generate_contexts.py --max_chunks 5000 --max_questions 5000 --map_size '10,10' --lattice 'rect' --rough_len_method 'neurons_formula' --finetune_len_method 'embedding_formula'"
 
 # Run evaluation
 sudo docker run --rm --gpus all --network host \

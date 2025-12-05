@@ -11,13 +11,15 @@ from datasets import load_dataset
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import StandardScaler
 from sompy.sompy import SOMFactory
+from sompy.visualization.bmuhits import BmuHitsView
 from math import sqrt
 import csv
 from tqdm import tqdm
+import logging
 
-# Ollama configuration
-OLLAMA_BASE_URL = "http://localhost:11434"
-EMBEDDING_MODEL = "nomic-embed-text"
+# # Ollama configuration
+# OLLAMA_BASE_URL = "http://localhost:11434"
+# EMBEDDING_MODEL = "nomic-embed-text"
 
 # Optional Ray imports
 try:
@@ -25,6 +27,9 @@ try:
     RAY_AVAILABLE = True
 except ImportError:
     RAY_AVAILABLE = False
+
+# ensure INFO and above are printed to console
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 def embed_questions(questions: List[str]) -> np.ndarray:
     """Load precomputed question embeddings from `stored_embeddings/question_embeddings.npy`.
@@ -87,9 +92,9 @@ def embed_questions(questions: List[str]) -> np.ndarray:
     print(f"✅ Loaded {embeddings_array.shape[0]} question embeddings, shape: {embeddings_array.shape}")
     return embeddings_array
 
-# Ollama configuration
-OLLAMA_BASE_URL = "http://localhost:11434"
-EMBEDDING_MODEL = "nomic-embed-text"  # or "all-minilm" depending on what you have
+# # Ollama configuration
+# OLLAMA_BASE_URL = "http://localhost:11434"
+# EMBEDDING_MODEL = "nomic-embed-text"  # or "all-minilm" depending on what you have
 
 # Optional Ray imports
 try:
@@ -115,41 +120,41 @@ MAX_CHUNKS = 5000                        # Limit for Wikipedia chunks
 docs = []
 wik_embeddings = None
 sm = None
-def get_ollama_embedding(text: str, model: str = EMBEDDING_MODEL) -> List[float]:
-    """Get embedding from Ollama"""
-    try:
-        response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/embeddings",
-            json={
-                "model": model,
-                "prompt": text
-            },
-            timeout=30
-        )
-        response.raise_for_status()
-        return response.json()["embedding"]
-    except Exception as e:
-        print(f"Error getting embedding from Ollama: {e}")
-        raise
+# def get_ollama_embedding(text: str, model: str = EMBEDDING_MODEL) -> List[float]:
+#     """Get embedding from Ollama"""
+#     try:
+#         response = requests.post(
+#             f"{OLLAMA_BASE_URL}/api/embeddings",
+#             json={
+#                 "model": model,
+#                 "prompt": text
+#             },
+#             timeout=30
+#         )
+#         response.raise_for_status()
+#         return response.json()["embedding"]
+#     except Exception as e:
+#         print(f"Error getting embedding from Ollama: {e}")
+#         raise
 
-def setup_ollama():
-    """Test Ollama connection"""
-    try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
-        response.raise_for_status()
-        models = response.json().get("models", [])
-        model_names = [m['name'] for m in models]
-        print(f"✅ Ollama connected with {len(models)} models: {model_names}")
+# def setup_ollama():
+#     """Test Ollama connection"""
+#     try:
+#         response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+#         response.raise_for_status()
+#         models = response.json().get("models", [])
+#         model_names = [m['name'] for m in models]
+#         print(f"✅ Ollama connected with {len(models)} models: {model_names}")
         
-        # Check if embedding model is available
-        if not any(EMBEDDING_MODEL in name for name in model_names):
-            print(f"⚠️  Embedding model '{EMBEDDING_MODEL}' not found. Available models: {model_names}")
-            print(f"   You may need to run: ollama pull {EMBEDDING_MODEL}")
-        return True
-    except Exception as e:
-        print(f"❌ Cannot connect to Ollama: {e}")
-        print("   Make sure Ollama is running: ollama serve")
-        raise
+#         # Check if embedding model is available
+#         if not any(EMBEDDING_MODEL in name for name in model_names):
+#             print(f"⚠️  Embedding model '{EMBEDDING_MODEL}' not found. Available models: {model_names}")
+#             print(f"   You may need to run: ollama pull {EMBEDDING_MODEL}")
+#         return True
+#     except Exception as e:
+#         print(f"❌ Cannot connect to Ollama: {e}")
+#         print("   Make sure Ollama is running: ollama serve")
+#         raise
 
 def load_wikipedia_data(max_chunks=5000):
     """Load Wikipedia embeddings dataset"""
@@ -193,22 +198,32 @@ def load_wikipedia_data(max_chunks=5000):
 
     return np_embeddings
 
-def train_som_model(np_embeddings):
+# Function to visualize the trained SOM map and save in results directory
+def visualize_som_map(som_model, save_path="results/som_bmu_hits.png"):
+    """Visualize and save SOM BMU hits"""
+    bmu_view = BmuHitsView(10, 10, "Hits Map", text_size=7)
+    bmu_view.show(som_model, anotate=True, onlyzeros=False, labelsize=12, cmap="plasma", logaritmic=False)
+    
+    # Create results directory if it doesn't exist
+    results_dir = os.path.dirname(save_path)
+    if results_dir and not os.path.exists(results_dir):
+        os.makedirs(results_dir, mode=0o777, exist_ok=True)
+    
+    bmu_view.save(save_path)
+    print(f"✅ Saved SOM BMU hits visualization to {save_path}")
+
+def train_som_model(np_embeddings, mapsize=(10,10), rough_len=1000, finetune_len=4000, lattice="rect"):
     """Train SOM model on Wikipedia embeddings"""
     global sm
     
-    print("Training SOM model...")
-    
-    # Calculate training lengths
-    rough_len = int(5 * sqrt(len(np_embeddings)))
-    finetune_len = int(20 * sqrt(len(np_embeddings)))
+    print(f"Training SOM model with mapsize={mapsize}, rough_len={rough_len}, finetune_len={finetune_len}...")
     
     # SOM parameters (using the best from your notebook)
     test_case = {
-        'mapsize': (10, 10),
+        'mapsize': mapsize,
         'normalization': 'var',
         'initialization': 'pca',
-        'lattice': 'rect',
+        'lattice': lattice, #['rect', 'hexa']
         'neighborhood': 'gaussian',
         'training': 'batch',
         'name': 'som1',
@@ -228,7 +243,10 @@ def train_som_model(np_embeddings):
         name=test_case['name']
     )
     
-    sm.train(n_job=1, verbose=False, train_rough_len=rough_len, train_finetune_len=finetune_len)
+    sm.train(n_job=1, verbose='info', train_rough_len=rough_len, train_finetune_len=finetune_len)
+
+    # Visualize and save the SOM map
+    visualize_som_map(sm, save_path="results/som_bmu_hits.png")
     
     topographic_error = sm.calculate_topographic_error()
     # Calculate quantization error manually if quant_error_history doesn't exist
@@ -238,8 +256,41 @@ def train_som_model(np_embeddings):
         # Calculate quantization error manually
         quantization_error = sm.calculate_quantization_error()
     print(f"✅ SOM trained - Topographic error: {topographic_error:.3f}, Quantization error: {quantization_error:.3f}")
-    
-    return sm
+
+    return rough_len, finetune_len, topographic_error, quantization_error
+
+def log_som_training( number_of_chunks: int,
+                    number_of_questions: int,
+                    map_size_tuple: Tuple[int, int],
+                    lattice: str,
+                    rough_len: int,
+                    finetune_len: int,
+                    topographic_error: float,
+                    quantization_error: float,
+                    log_path: str = "results/som_training_logs.csv"):
+    """Append SOM training info to CSV (creates results dir if missing)."""
+    # Ensure results dir exists
+    results_dir = os.path.dirname(log_path)
+    if results_dir and not os.path.exists(results_dir):
+        os.makedirs(results_dir, mode=0o777, exist_ok=True)
+
+    file_exists = os.path.isfile(log_path)
+    with open(log_path, "a", newline='') as csvfile:
+        fieldnames = ['timestamp', 'number_of_chunks', 'number_of_questions', 'map_size', 'lattice', 'rough_len', 'finetune_len', 'topographic_error', 'quantization_error']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+            'number_of_chunks': number_of_chunks,
+            'number_of_questions': number_of_questions,
+            'map_size': f"{map_size_tuple[0]},{map_size_tuple[1]}",
+            'lattice':f"{lattice}",
+            'rough_len': rough_len,
+            'finetune_len': finetune_len,
+            'topographic_error': f"{topographic_error:.6f}",
+            'quantization_error': f"{quantization_error:.6f}"
+        })
 
 def find_closest_hit_per_bmu(sm):
     """Find the closest hit for each BMU"""
@@ -356,7 +407,16 @@ def retrieve_final_contexts_cosine(question_embedding):
     context, scores = get_query_context_cosine_with_scores(question_embedding.reshape(1, -1), docs, NUM_CONTEXTS)
     return context
 
-def find_contexts_all_questions(input_path: str, output_path: str = "results/retrieved_contexts.csv", max_chunks: int = MAX_CHUNKS, max_questions: int = MAX_QUESTIONS):
+def find_contexts_all_questions(
+        input_path: str, 
+        output_path: str = "results/retrieved_contexts.csv", 
+        max_chunks: int = MAX_CHUNKS, 
+        max_questions: int = MAX_QUESTIONS,
+        map_size: tuple = (10,10),
+        rough_len_method: str = "embedding_formula",
+        finetune_len_method: str = "embedding_formula",
+        lattice: str = "rect"
+    ):
     """Main function to generate contexts for all questions"""
     
     if not os.path.exists(input_path):
@@ -384,9 +444,37 @@ def find_contexts_all_questions(input_path: str, output_path: str = "results/ret
     print(f"Processing {len(questions)} questions...")
     
     # Setup
-    setup_ollama()
+    # setup_ollama()
     np_embeddings = load_wikipedia_data(max_chunks=max_chunks)
-    train_som_model(np_embeddings)
+
+    # Calculate rough_len and finetune_len based on selected methods
+    if rough_len_method == 'embedding_formula':
+        rough_len = int(5 * sqrt(len(np_embeddings)))
+    elif rough_len_method == 'neurons_formula':
+        rough_len = int(500 * map_size[0] * map_size[1])  
+    else:
+        raise ValueError(f"Unknown rough_len_method: {rough_len_method}")
+    
+    if finetune_len_method == 'embedding_formula':
+        finetune_len = int(20 * sqrt(len(np_embeddings)))
+    elif finetune_len_method == 'error_convergence':
+        finetune_len = int(10 * sqrt(len(np_embeddings)))  # Example formula, adjust as needed
+    else:
+        raise ValueError(f"Unknown finetune_len_method: {finetune_len_method}")
+
+    print(f"Training SOM with map size {map_size}, rough_len={rough_len}, finetune_len={finetune_len}...")
+    rough_len, finetune_len, topographic_error, quantization_error = train_som_model(np_embeddings, mapsize=map_size, rough_len=rough_len, finetune_len=finetune_len, lattice=lattice)
+
+    log_som_training(
+        number_of_chunks=max_chunks,
+        number_of_questions=max_questions,
+        map_size_tuple=map_size,
+        lattice=lattice,
+        rough_len=rough_len,
+        finetune_len=finetune_len,
+        topographic_error=topographic_error,
+        quantization_error=quantization_error
+    )
     
     # Embed all questions
     question_embeddings = embed_questions(questions)
@@ -433,7 +521,7 @@ def find_contexts_all_questions(input_path: str, output_path: str = "results/ret
         # For relative paths, write to current directory
         output_path = os.path.join(os.getcwd(), output_path)
     
-    # print(f"Writing to: {output_path}")
+    print(f"Writing to: {output_path}")
     
     # Save as CSV
     with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
@@ -452,14 +540,18 @@ def find_contexts_all_questions(input_path: str, output_path: str = "results/ret
     contexts_dir = "contexts"
     os.makedirs(contexts_dir, mode=0o777, exist_ok=True)
     
-    som_contexts_scores = [(result["som_contexts"], np.array([0.5] * len(result["som_contexts"]))) for result in results]
-    cosine_contexts_scores = [(result["cosine_contexts"], np.array([0.5] * len(result["cosine_contexts"]))) for result in results]
-    
-    with open(f"{contexts_dir}/som_contexts_scores.pkl", 'wb') as f:
-        pickle.dump(som_contexts_scores, f)
-    
-    with open(f"{contexts_dir}/cosine_contexts_scores.pkl", 'wb') as f:
-        pickle.dump(cosine_contexts_scores, f)
+    # Save questions, answers and retrieved contexts into a single pickle
+    retrieved = [
+        {
+            "question": r["question"],
+            "answer": r["answer"],
+            "som_contexts": r["som_contexts"],
+            "cosine_contexts": r["cosine_contexts"]
+        }
+        for r in results
+    ]
+    with open(f"{contexts_dir}/retrieved_contexts.pkl", "wb") as f:
+        pickle.dump(retrieved, f)
     
     # print(f"✅ Saved results to {output_path}")
     print(f"✅ Saved pickle files to {contexts_dir}/")
@@ -477,6 +569,15 @@ if __name__ == "__main__":
                         help="Number of Wikipedia chunks to load for SOM training (default: %(default)s)")
     parser.add_argument("--max_questions", "-q", type=int, default=MAX_QUESTIONS,
                         help="Limit number of questions to process (default: %(default)s)")
+    # Get arguments for map size as a tuple for example (10,10) and also get rough_len and finetune_len calculation methods (options are rough_len : 'embedding_formula' or 'neurons formuls' | finetune_len : 'embedding_formula' or 'error_convergence')
+    parser.add_argument("--map_size", "-s", type=str, default="10,10",
+                        help="SOM map size as 'rows,cols' (default: %(default)s)")
+    parser.add_argument("--rough_len_method", type=str, choices=['embedding_formula', 'neurons_formula'], default='embedding_formula',
+                        help="Method to calculate rough_len (default: %(default)s)")
+    parser.add_argument("--finetune_len_method", type=str, choices=['embedding_formula', 'error_convergence'], default='embedding_formula',
+                        help="Method to calculate finetune_len (default: %(default)s)")
+    parser.add_argument("--lattice", type=str, choices=['rect','hexa'], default='rect',
+                        help="The shape of the map nodes (default: %(default)s)")
     args = parser.parse_args()
 
     # Use parsed args to call main function
@@ -484,5 +585,9 @@ if __name__ == "__main__":
         input_path=args.input,
         output_path=args.output,
         max_chunks=args.max_chunks,
-        max_questions=args.max_questions
+        max_questions=args.max_questions,
+        map_size=tuple(map(int, args.map_size.split(','))),
+        rough_len_method=args.rough_len_method,
+        finetune_len_method=args.finetune_len_method,
+        lattice=args.lattice
     )
