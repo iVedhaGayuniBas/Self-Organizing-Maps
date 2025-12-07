@@ -429,6 +429,11 @@ def load_from_csv_results(csv_file: str) -> Tuple[List[str], List[str], List[Lis
         print(f"Error loading questions, answers, and contexts from CSV: {e}")
         return [], [], [], []
 
+def avg_confidence(conf_list):
+    if conf_list is None or len(conf_list) == 0:
+        return 0.0
+    return float(np.mean(conf_list))
+
 def main():
     """Main function to run the scaled evaluation"""
     parser = argparse.ArgumentParser(description='Scale up context evaluation with actual data')
@@ -476,7 +481,9 @@ def main():
             questions = [item["question"] for item in retrieved]
             answers = [item["answer"] for item in retrieved]
             som_contexts = [item["som_contexts"] for item in retrieved]
+            som_scores = [item["som_scores"] for item in retrieved]
             cosine_contexts = [item["cosine_contexts"] for item in retrieved]
+            cosine_scores = [item["cosine_scores"] for item in retrieved]
             print(f"Loaded {len(questions)} questions, answers and contexts from pickle: {args.qa_file}")
             loaded = True
         except Exception as e:
@@ -510,7 +517,7 @@ def main():
     # Fallback to CSV if pickle loading failed
     if not loaded and args.csv_file and os.path.exists(args.csv_file):
         print(f"Loading questions, answers and contexts from CSV: {args.csv_file}")
-        questions, answers, som_contexts, cosine_contexts = load_from_csv_results(args.csv_file)
+        questions, answers, som_contexts, som_scores, cosine_contexts, cosine_scores = load_from_csv_results(args.csv_file)
         print(f"Loaded {len(questions)} questions, answers and contexts from CSV: {args.csv_file}")
         if not questions or not answers or not som_contexts or not cosine_contexts:
             print("Failed to load Q&A data and contexts. Exiting.")
@@ -530,14 +537,18 @@ def main():
             questions = [questions[i] for i in indices]
             answers = [answers[i] for i in indices]
             som_contexts = [som_contexts[i] for i in indices]
+            som_scores = [som_scores[i] for i in indices]
             cosine_contexts = [cosine_contexts[i] for i in indices]
+            cosine_scores = [cosine_scores[i] for i in indices]
             print(f"Using random sampling (seed=42) for representative evaluation")
         else:
             # Sequential sampling (first N questions)
             questions = questions[:args.max_questions]
             answers = answers[:args.max_questions]
             som_contexts = som_contexts[:args.max_questions]
+            som_scores = som_scores[:args.max_questions]
             cosine_contexts = cosine_contexts[:args.max_questions]
+            cosine_scores = cosine_scores[:args.max_questions]
             print(f"Using sequential sampling (first {args.max_questions} questions)")
     
     print(f"\nReady to evaluate {len(questions)} questions with actual context data")
@@ -552,6 +563,10 @@ def main():
         ray_evaluators=args.ray_evaluators,
         batch_size=args.batch_size
     )
+
+    # Calculate average confidence scores and add to DataFrame
+    df['som_avg_confidence'] = [avg_confidence(scores) for scores in som_scores]
+    df['cosine_avg_confidence'] = [avg_confidence(scores) for scores in cosine_scores]
     
     # Print results
     print_evaluation_summary(df, som_metrics, cosine_metrics)

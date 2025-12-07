@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_curve, auc
 import matplotlib.pyplot as plt
+import argparse
 
 # ------------------------------------------------------------
 # Helper: load pickle
@@ -13,64 +14,46 @@ def load_pickle(path):
         return pickle.load(f)
 
 # ------------------------------------------------------------
-# Helper: compute average confidence per question
-# ------------------------------------------------------------
-def avg_confidence(conf_list):
-    if conf_list is None or len(conf_list) == 0:
-        return 0.0
-    return float(np.mean(conf_list))
-
-# ------------------------------------------------------------
 # Main function
 # ------------------------------------------------------------
 def main():
+    # ----------------------------
+    # Parse command-line arguments
+    # ----------------------------
+    parser = argparse.ArgumentParser(
+        description="Generate ROC curves comparing SOM vs Cosine RAG methods"
+    )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        default="scaled_evaluation_results_5000_questions.csv",
+        help="Evaluation results CSV file name or full path (default: scaled_evaluation_results_5000_questions.csv)"
+    )
+    args = parser.parse_args()
 
     # ----------------------------
     # File paths
     # ----------------------------
-    som_pkl_path = "contexts/som_contexts_scores.pkl"
-    cosine_pkl_path = "contexts/cosine_contexts_scores.pkl"
-    eval_results_folder = "evaluation_results_log"
+    eval_csv_directory = "evaluation_results_logs"
+    # If the argument contains a path separator, use it as-is; otherwise prepend the directory
+    if os.path.sep in args.csv or "/" in args.csv:
+        eval_csv_path = args.csv
+    else:
+        eval_csv_path = os.path.join(eval_csv_directory, args.csv)
 
-    # Automatically detect the CSV file
-    csv_files = [f for f in os.listdir(eval_results_folder) if f.endswith(".csv")]
-    
-    if len(csv_files) == 0:
-        raise FileNotFoundError("No CSV evaluation file found in evaluation_results_log/")
-    if len(csv_files) > 1:
-        print("Multiple CSVs found. Using:", csv_files[0])
-
-    eval_csv_path = os.path.join(eval_results_folder, csv_files[0])
-
-    # ----------------------------
-    # Load data
-    # ----------------------------
-    print("Loading SOM and Cosine confidence files...")
-    som_scores = load_pickle(som_pkl_path)
-    cosine_scores = load_pickle(cosine_pkl_path)
+    # Verify the file exists
+    if not os.path.exists(eval_csv_path):
+        raise FileNotFoundError(f"CSV file not found at: {eval_csv_path}")
 
     print("Loading evaluation results CSV...")
     df_eval = pd.read_csv(eval_csv_path)
 
     # Expecting the CSV to have:
     # som_contains_answer, cosine_contains_answer columns
-    required_cols = ["som_contains_answer", "cosine_contains_answer"]
+    required_cols = ["som_contains_answer", "cosine_contains_answer", "som_avg_confidence", "cosine_avg_confidence"]
     for col in required_cols:
         if col not in df_eval.columns:
             raise ValueError(f"Missing required column '{col}' in evaluation CSV.")
-
-    # ----------------------------
-    # Convert lists of chunk confidences → average confidence per question
-    # ----------------------------
-    print("Computing average confidence per question...")
-
-    df_eval["som_avg_conf"] = df_eval.index.map(
-        lambda i: avg_confidence(som_scores.get(i, []))
-    )
-
-    df_eval["cosine_avg_conf"] = df_eval.index.map(
-        lambda i: avg_confidence(cosine_scores.get(i, []))
-    )
 
     # ----------------------------
     # Prepare labels and scores
@@ -78,8 +61,8 @@ def main():
     y_som = df_eval["som_contains_answer"].astype(int).values
     y_cos = df_eval["cosine_contains_answer"].astype(int).values
 
-    som_scores_arr = df_eval["som_avg_conf"].values
-    cosine_scores_arr = df_eval["cosine_avg_conf"].values
+    som_scores_arr = df_eval["som_avg_confidence"].values
+    cosine_scores_arr = df_eval["cosine_avg_confidence"].values
 
     # ----------------------------
     # Compute ROC curves
@@ -106,6 +89,12 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+
+    # Save plot to evaluation_results_logs folder
+    plot_path = os.path.join(eval_csv_directory, "roc_curve.png")
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    print(f"ROC curve saved to: {plot_path}")
+
     plt.show()
 
     print("\n===== ROC AUC RESULTS =====")

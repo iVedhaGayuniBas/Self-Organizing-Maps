@@ -398,14 +398,14 @@ def retrieve_final_contexts_som(question_embedding):
     bmu_hit_vectors_with_indices = [(i, v) for i, v in enumerate(bmu_first_hit_vectors)]
 
     context, scores = get_query_context_som_with_scores(question_embedding, sm, bmu_hit_vectors_with_indices, docs, NUM_CONTEXTS)
-    return context
+    return context, scores
 
 def retrieve_final_contexts_cosine(question_embedding):
     """Retrieve cosine similarity contexts for a question"""
     global docs
     
     context, scores = get_query_context_cosine_with_scores(question_embedding.reshape(1, -1), docs, NUM_CONTEXTS)
-    return context
+    return context, scores
 
 def find_contexts_all_questions(
         input_path: str, 
@@ -485,14 +485,16 @@ def find_contexts_all_questions(
         print(f"Processing question {i+1}/{len(questions)}: {question[:50]}...")
         
         try:
-            som_contexts = retrieve_final_contexts_som(embedding)
-            cosine_contexts = retrieve_final_contexts_cosine(embedding)
+            som_contexts, som_scores = retrieve_final_contexts_som(embedding)
+            cosine_contexts, cosine_scores = retrieve_final_contexts_cosine(embedding)
             
             results.append({
                 "question": question,
                 "answer": answer,
                 "som_contexts": som_contexts,
-                "cosine_contexts": cosine_contexts
+                "som_scores": som_scores,
+                "cosine_contexts": cosine_contexts,
+                "cosine_scores": cosine_scores
             })
             
             # Small delay to avoid overwhelming the system
@@ -505,7 +507,9 @@ def find_contexts_all_questions(
                 "question": question,
                 "answer": answer,
                 "som_contexts": [],
-                "cosine_contexts": []
+                "som_scores": [],
+                "cosine_contexts": [],
+                "cosine_scores": []
             })
     
     # Save results
@@ -526,14 +530,16 @@ def find_contexts_all_questions(
     # Save as CSV
     with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["question", "answer", "som_context", "cosine_context"])
+        writer.writerow(["question", "answer", "som_context", "som_scores", "cosine_context", "cosine_scores"])
         
         for result in results:
             writer.writerow([
                 result["question"],
                 result["answer"],
                 str(result["som_contexts"]),
-                str(result["cosine_contexts"])
+                str(result["som_scores"]),
+                str(result["cosine_contexts"]),
+                str(result["cosine_scores"])
             ])
     
     # Save as pickle for the evaluation script
@@ -546,7 +552,9 @@ def find_contexts_all_questions(
             "question": r["question"],
             "answer": r["answer"],
             "som_contexts": r["som_contexts"],
-            "cosine_contexts": r["cosine_contexts"]
+            "som_scores": r["som_scores"],
+            "cosine_contexts": r["cosine_contexts"],
+            "cosine_scores": r["cosine_scores"]
         }
         for r in results
     ]
