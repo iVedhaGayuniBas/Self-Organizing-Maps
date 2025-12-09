@@ -64,39 +64,20 @@ class OllamaEvaluator:
     def evaluate_context_contains_answer(self, question: str, answer: str, context: list) -> bool:
         """Evaluate if context contains the answer using Ollama"""
 
-        # # Optional debug: record the exact arguments passed to this evaluator
-        # try:
-        #     if globals().get("DUMP_PROMPTS", False):
-        #         record = {
-        #             "ts": datetime.utcnow().isoformat() + "Z",
-        #             "model": self.model_name,
-        #             "question": question,
-        #             "answer": answer,
-        #             "context_preview": context[:1]
-        #         }
-        #         # append json line to debug file
-        #         with open("evaluation_debug_prompts.jsonl", "a", encoding="utf-8") as fh:
-        #             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        #         print(f"[DUMP_PROMPTS] Logged prompt for question (len={len(question)})")
-        # except Exception as _e:
-        #     # don't fail evaluation for logging errors
-        #     print(f"Warning: failed to log prompt: {_e}")
-
         prompt = f"""You are evaluating whether a given context contains the answer to a question.
 
         Question: {question}
         Expected Answer: {answer}
         Context: {context}
 
-        Does the context contain the expected answer to the question? Respond with only "YES" if the context contains the answer.
-        or else "NO".
-        Print Question, Expected Answer, entire Context you received for verification.
+        Does the context contain the expected answer to the question? Respond with only "TRUE" if the context contains the answer.
+        or else "FALSE".
 
         Response:"""
         
         response = self.query_llm(prompt)
-        print(f"LLM response: {response}")
-        return response.upper().startswith("YES")
+        print(f"LLM response: {response} | Question: {question[:20]}")
+        return response.upper().startswith("TRUE")
 
 # Ray-enabled evaluator for distributed processing
 if RAY_AVAILABLE:
@@ -112,13 +93,13 @@ if RAY_AVAILABLE:
             results = []
             for question, answer, som_contexts, cosine_contexts in batch_data:
                 som_contains_answer = any(
-                    self.evaluator.evaluate_context_contains_answer(question, answer, som_contexts)
-                    # for ctx in som_contexts
+                    self.evaluator.evaluate_context_contains_answer(question, answer, ctx)
+                    for ctx in som_contexts
                 )
                 
                 cosine_contains_answer = any(
-                    self.evaluator.evaluate_context_contains_answer(question, answer, cosine_contexts)
-                    # for ctx in cosine_contexts
+                    self.evaluator.evaluate_context_contains_answer(question, answer, ctx)
+                    for ctx in cosine_contexts
                 )
                 
                 results.append({
@@ -129,149 +110,75 @@ if RAY_AVAILABLE:
                 })
             return results
 
-def load_qa_data(file_path: str) -> Tuple[List[str], List[str]]:
-    """Load questions and answers from Excel file (Title | Question | Answer)"""
-    try:
-        df = pd.read_excel(file_path)
-        if 'question' not in df.columns or 'answer' not in df.columns:
-            raise ValueError("Excel file must contain 'Question' and 'Answer' columns")
-        
-        questions = df['question'].astype(str).str.strip().tolist()
-        answers = df['answer'].astype(str).str.strip().tolist()
-        
-        print(f"Loaded {len(questions)} questions and answers from {file_path}")
-        return questions, answers
-    except Exception as e:
-        print(f"Error loading QA data: {e}")
-        return [], []
-
-def load_from_csv_results(csv_file: str) -> Tuple[List[List[str]], List[List[str]]]:
-    """
-    Load SOM and Cosine contexts from a CSV where each context column contains a stringified list.
-    Columns: 'question' | 'answer' | 'som_context' | 'cosine_context'
-    """
-    try:
-        df = pd.read_csv(csv_file)
-        if 'som_context' not in df.columns or 'cosine_context' not in df.columns:
-            raise ValueError("CSV must contain 'som_context' and 'cosine_context' columns")
-
-        def safe_eval(x):
-            try:
-                # Use ast.literal_eval for safer evaluation
-                result = ast.literal_eval(x)
-                # If it's a tuple, extract the first element (the context list)
-                if isinstance(result, tuple):
-                    return result[0]
-                return result
-            except:
-                return []
-
-        som_contexts = df['som_context'].apply(safe_eval).tolist()
-        cosine_contexts = df['cosine_context'].apply(safe_eval).tolist()
-
-        print(f"Loaded {len(som_contexts)} context pairs from {csv_file}")
-        return som_contexts, cosine_contexts
-    except Exception as e:
-        print(f"Error loading contexts from CSV: {e}")
-        return [], []
-
-
-def evaluate_single_item(args: Tuple) -> Dict[str, Any]:
-    question, answer, som_contexts, cosine_contexts, evaluator = args
-
-    som_contains_answer = any(
-        evaluator.evaluate_context_contains_answer(question, answer, ctx)
-        for ctx in som_contexts
-    )
-
-    cosine_contains_answer = any(
-        evaluator.evaluate_context_contains_answer(question, answer, ctx)
-        for ctx in cosine_contexts
-    )
-
-    return {
-        'question': question,
-        'answer': answer,
-        'som_contains_answer': som_contains_answer,
-        'cosine_contains_answer': cosine_contains_answer
-    }
-
-
-def evaluate_context_retrieval(
-    questions: List[str], 
-    answers: List[str], 
-    som_contexts: List[Tuple[List[str], np.ndarray]], 
-    cosine_contexts: List[Tuple[List[str], np.ndarray]], 
-    max_workers: int = 4,
-    use_ray: bool = False,
-    ray_evaluators: int = 8,
-    batch_size: int = 10
-) -> Tuple[pd.DataFrame, Dict, Dict, Dict, Dict]:
-    """
-    Evaluate context retrieval performance using Ollama
-    """
-    print(f"Starting evaluation of {len(questions)} questions...")
+def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: str = "results/scaled_comparison_chart.png"):
+    """Create a bar chart comparing SOM vs Cosine metrics"""
+    metrics = ['Accuracy', 'Precision', 'Recall', 'F1 Score']
+    som_values = [som_metrics[metric] for metric in metrics]
+    cosine_values = [cosine_metrics[metric] for metric in metrics]
     
-    if use_ray and RAY_AVAILABLE:
-        print(f"Using Ray distributed evaluation with {ray_evaluators} evaluators")
-        return _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, 
-                                ray_evaluators, batch_size)
-    else:
-        print(f"Using standard evaluation with {max_workers} workers")
-        return _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers)
+    x = np.arange(len(metrics))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-def _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers):
-    """Standard evaluation using ThreadPoolExecutor"""
-    evaluator = OllamaEvaluator()
-    
-    args_list = [
-        (question, answer, som_ctx, cos_ctx, evaluator)
-        for question, answer, som_ctx, cos_ctx in zip(questions, answers, som_contexts, cosine_contexts)
-    ]
-    
-    results = []
-    
-    # Process in batches to avoid overwhelming the system
-    batch_size = 50
-    for i in tqdm(range(0, len(args_list), batch_size), desc="Processing batches"):
-        batch = args_list[i:i + batch_size]
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            batch_results = list(executor.map(evaluate_single_item, batch))
-            results.extend(batch_results)
-        
-        # Small delay between batches
-        time.sleep(1)
-    
-    return _process_results(results)
+    patterns = [ "/" , "\\" , "|" , "-" , "+" , "x", "o", "O", ".", "*" ]
 
-def _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, ray_evaluators, batch_size):
-    """Ray distributed evaluation"""
-    # Initialize Ray if not already done
-    if not ray.is_initialized():
-        ray.init(address='auto', ignore_reinit_error=True)
+    bars1 = ax.bar(x - width/2, som_values, width, label='SOMpy', fill=False, edgecolor='black', linewidth=2, hatch=patterns[0]*3)
+    bars2 = ax.bar(x + width/2, cosine_values, width, label='Cosine Similarity', fill=False, edgecolor='black', linewidth=2, hatch=patterns[6]*3)
     
-    # Create evaluator actors
-    evaluators = [RayOllamaEvaluator.remote() for _ in range(ray_evaluators)]
+    ax.set_xlabel('Metrics')
+    ax.set_ylabel('Score')
+    ax.set_title('SOMpy vs Cosine Similarity: Context Retrieval Performance')
+    ax.set_xticks(x)
+    ax.set_xticklabels(metrics)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     
-    # Prepare data batches
-    data = list(zip(questions, answers, som_contexts, cosine_contexts))
-    batches = [data[i:i + batch_size] for i in range(0, len(data), batch_size)]
+    # Add value labels on bars
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.3f}',
+                       xy=(bar.get_x() + bar.get_width() / 2, height),
+                       xytext=(0, 3),
+                       textcoords="offset points",
+                       ha='center', va='bottom')
     
-    # Distribute work across evaluators
-    futures = []
-    for i, batch in enumerate(batches):
-        evaluator = evaluators[i % len(evaluators)]
-        future = evaluator.evaluate_batch.remote(batch)
-        futures.append(future)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"Chart saved as {save_path}")
+
+def print_evaluation_summary(df: pd.DataFrame, som_metrics: Dict, cosine_metrics: Dict):
+    """Print a summary of the evaluation results"""
+    print("\n" + "="*60)
+    print("EVALUATION SUMMARY")
+    print("="*60)
     
-    # Collect results
-    print(f"Processing {len(batches)} batches with {len(evaluators)} evaluators...")
-    results = []
-    for future in tqdm(ray.get(futures), desc="Collecting results"):
-        results.extend(future)
+    print(f"\nTotal Questions Evaluated: {len(df)}")
     
-    return _process_results(results)
+    print(f"\nSOMpy Performance:")
+    print(f"  - Accuracy: {som_metrics['Accuracy']:.3f}")
+    print(f"  - Precision: {som_metrics['Precision']:.3f}")
+    print(f"  - Recall: {som_metrics['Recall']:.3f}")
+    print(f"  - F1 Score: {som_metrics['F1 Score']:.3f}")
+    print(f"  - Questions with correct context: {df['som_contains_answer'].sum()}")
+    
+    print(f"\nCosine Similarity Performance:")
+    print(f"  - Accuracy: {cosine_metrics['Accuracy']:.3f}") 
+    print(f"  - Precision: {cosine_metrics['Precision']:.3f}")
+    print(f"  - Recall: {cosine_metrics['Recall']:.3f}")
+    print(f"  - F1 Score: {cosine_metrics['F1 Score']:.3f}")
+    print(f"  - Questions with correct context: {df['cosine_contains_answer'].sum()}")
+    
+    # Calculate improvement
+    som_f1 = som_metrics['F1 Score']
+    cosine_f1 = cosine_metrics['F1 Score']
+    improvement = ((som_f1 - cosine_f1) / cosine_f1 * 100) if cosine_f1 > 0 else 0
+    
+    print(f"\nSOMpy vs Cosine Improvement:")
+    print(f"  - F1 Score Improvement: {improvement:.1f}%")
+    print(f"  - Absolute F1 Difference: {som_f1 - cosine_f1:.3f}")
 
 def _process_results(results):
     """Process evaluation results and calculate metrics according to user's definitions"""
@@ -328,94 +235,213 @@ def _process_results(results):
 
     # Package metrics
     som_metrics = {
+        'Accuracy': som_accuracy,
         'Precision': som_precision,
         'Recall': som_recall,
-        'F1 Score': som_f1,
-        'Accuracy': som_accuracy
+        'F1 Score': som_f1
     }
     
     cosine_metrics = {
+        'Accuracy': cosine_accuracy,
         'Precision': cosine_precision,
         'Recall': cosine_recall,
-        'F1 Score': cosine_f1,
-        'Accuracy': cosine_accuracy
+        'F1 Score': cosine_f1
     }
     
     return df, som_cm, cosine_cm, som_metrics, cosine_metrics
 
-def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: str = "results/scaled_comparison_chart.png"):
-    """Create a bar chart comparing SOM vs Cosine metrics"""
-    metrics = ['Precision', 'Recall', 'F1 Score', 'Accuracy']
-    som_values = [som_metrics[metric] for metric in metrics]
-    cosine_values = [cosine_metrics[metric] for metric in metrics]
-    
-    x = np.arange(len(metrics))
-    width = 0.35
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars1 = ax.bar(x - width/2, som_values, width, label='SOMpy', color='skyblue', alpha=0.8)
-    bars2 = ax.bar(x + width/2, cosine_values, width, label='Cosine Similarity', color='lightcoral', alpha=0.8)
-    
-    ax.set_xlabel('Metrics')
-    ax.set_ylabel('Score')
-    ax.set_title('SOMpy vs Cosine Similarity: Context Retrieval Performance')
-    ax.set_xticks(x)
-    ax.set_xticklabels(metrics)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Add value labels on bars
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            ax.annotate(f'{height:.3f}',
-                       xy=(bar.get_x() + bar.get_width() / 2, height),
-                       xytext=(0, 3),
-                       textcoords="offset points",
-                       ha='center', va='bottom')
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-    print(f"Chart saved as {save_path}")
+def evaluate_single_item(args: Tuple) -> Dict[str, Any]:
+    question, answer, som_contexts, cosine_contexts, evaluator = args
 
-def print_evaluation_summary(df: pd.DataFrame, som_metrics: Dict, cosine_metrics: Dict):
-    """Print a summary of the evaluation results"""
-    print("\n" + "="*60)
-    print("EVALUATION SUMMARY")
-    print("="*60)
+    som_contains_answer = any(
+        evaluator.evaluate_context_contains_answer(question, answer, ctx)
+        for ctx in som_contexts
+    )
+
+    cosine_contains_answer = any(
+        evaluator.evaluate_context_contains_answer(question, answer, ctx)
+        for ctx in cosine_contexts
+    )
+
+    return {
+        'question': question,
+        'answer': answer,
+        'som_contains_answer': som_contains_answer,
+        'cosine_contains_answer': cosine_contains_answer
+    }
+
+def _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers):
+    """Standard evaluation using ThreadPoolExecutor"""
+    evaluator = OllamaEvaluator()
     
-    print(f"\nTotal Questions Evaluated: {len(df)}")
+    args_list = [
+        (question, answer, som_ctx, cos_ctx, evaluator)
+        for question, answer, som_ctx, cos_ctx in zip(questions, answers, som_contexts, cosine_contexts)
+    ]
+
+    results = []
+    batch_size = 50
+    for i in tqdm(range(0, len(args_list), batch_size), desc="Processing batches"):
+        batch = args_list[i:i + batch_size]
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for arg in batch:
+                futures.append(executor.submit(evaluate_single_item, arg))
+            for fut in as_completed(futures):
+                try:
+                    res = fut.result()
+                    results.append(res)
+                except Exception as e:
+                    # log and optionally retry or append a failure placeholder
+                    print("Task failed:", e)
+                    results.append({'question': None, 'error': str(e)})
+        time.sleep(1)
     
-    print(f"\nSOMpy Performance:")
-    print(f"  - Precision: {som_metrics['Precision']:.3f}")
-    print(f"  - Recall: {som_metrics['Recall']:.3f}")
-    print(f"  - F1 Score: {som_metrics['F1 Score']:.3f}")
-    print(f"  - Accuracy: {som_metrics['Accuracy']:.3f}")
-    print(f"  - Questions with correct context: {df['som_contains_answer'].sum()}")
+    return _process_results(results)
+
+# def _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, ray_evaluators, batch_size):
+#     """Ray distributed evaluation"""
+#     # Initialize Ray if not already done
+#     if not ray.is_initialized():
+#         ray.init(address='auto', ignore_reinit_error=True)
     
-    print(f"\nCosine Similarity Performance:")
-    print(f"  - Precision: {cosine_metrics['Precision']:.3f}")
-    print(f"  - Recall: {cosine_metrics['Recall']:.3f}")
-    print(f"  - F1 Score: {cosine_metrics['F1 Score']:.3f}")
-    print(f"  - Accuracy: {cosine_metrics['Accuracy']:.3f}") 
-    print(f"  - Questions with correct context: {df['cosine_contains_answer'].sum()}")
+#     # Create evaluator actors
+#     evaluators = [RayOllamaEvaluator.remote() for _ in range(ray_evaluators)]
     
-    # Calculate improvement
-    som_f1 = som_metrics['F1 Score']
-    cosine_f1 = cosine_metrics['F1 Score']
-    improvement = ((som_f1 - cosine_f1) / cosine_f1 * 100) if cosine_f1 > 0 else 0
+#     # Prepare data batches
+#     data = list(zip(questions, answers, som_contexts, cosine_contexts))
+#     batches = [data[i:i + batch_size] for i in range(0, len(data), batch_size)]
     
-    print(f"\nSOMpy vs Cosine Improvement:")
-    print(f"  - F1 Score Improvement: {improvement:.1f}%")
-    print(f"  - Absolute F1 Difference: {som_f1 - cosine_f1:.3f}")
+#     # Distribute work across evaluators
+#     futures = []
+#     for i, batch in enumerate(batches):
+#         evaluator = evaluators[i % len(evaluators)]
+#         future = evaluator.evaluate_batch.remote(batch)
+#         futures.append(future)
+    
+#     # Collect results
+#     print(f"Processing {len(batches)} batches with {len(evaluators)} evaluators...")
+#     results = []
+#     for future in tqdm(ray.get(futures), desc="Collecting results"):
+#         results.extend(future)
+    
+#     return _process_results(results)
+
+def _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, ray_evaluators, batch_size):
+    """Ray distributed evaluation"""
+    # Initialize Ray if not already done
+    if not ray.is_initialized():
+        # Try to connect to an existing cluster first; if that fails, start a local Ray instance.
+        try:
+            ray_address = os.environ.get("RAY_ADDRESS", "auto")
+            ray.init(address=ray_address, ignore_reinit_error=True)
+            print(f"Connected to Ray at address={ray_address}")
+        except Exception as e:
+            print(f"Warning: failed to connect to a Ray cluster ({e}). Starting a local Ray instance.")
+            try:
+                # Ensure any previous state is cleared
+                try:
+                    ray.shutdown()
+                except Exception:
+                    pass
+                ray.init(ignore_reinit_error=True)
+                print("Started local Ray instance via ray.init().")
+            except Exception as e2:
+                # If even local init fails, raise and let caller handle fallback
+                print(f"Error: failed to start local Ray instance ({e2}). Falling back to standard evaluation.")
+                # Fall back to standard (non-Ray) evaluation
+                return _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers=4)
+    
+    # Create evaluator actors
+    evaluators = [RayOllamaEvaluator.remote() for _ in range(ray_evaluators)]
+    
+    # Prepare data batches
+    data = list(zip(questions, answers, som_contexts, cosine_contexts))
+    batches = [data[i:i + batch_size] for i in range(0, len(data), batch_size)]
+    
+    # Distribute work across evaluators
+    futures = []
+    for i, batch in enumerate(batches):
+        evaluator = evaluators[i % len(evaluators)]
+        future = evaluator.evaluate_batch.remote(batch)
+        futures.append(future)
+    
+    # Collect results
+    print(f"Processing {len(batches)} batches with {len(evaluators)} evaluators...")
+    results = []
+    for future in tqdm(ray.get(futures), desc="Collecting results"):
+        results.extend(future)
+    
+    return _process_results(results)
+
+def evaluate_context_retrieval(
+    questions: List[str], 
+    answers: List[str], 
+    som_contexts: List[Tuple[List[str], np.ndarray]], 
+    cosine_contexts: List[Tuple[List[str], np.ndarray]], 
+    max_workers: int = 4,
+    use_ray: bool = False,
+    ray_evaluators: int = 8,
+    batch_size: int = 10
+) -> Tuple[pd.DataFrame, Dict, Dict, Dict, Dict]:
+    """
+    Evaluate context retrieval performance using Ollama
+    """
+    print(f"Starting evaluation of {len(questions)} questions...")
+    
+    if use_ray and RAY_AVAILABLE:
+        print(f"Using Ray distributed evaluation with {ray_evaluators} evaluators")
+        return _evaluate_with_ray(questions, answers, som_contexts, cosine_contexts, ray_evaluators, batch_size)
+    else:
+        print(f"Using standard evaluation with {max_workers} workers")
+        return _evaluate_standard(questions, answers, som_contexts, cosine_contexts, max_workers)
+
+def load_from_csv_results(csv_file: str) -> Tuple[List[str], List[str], List[List[str]], List[List[str]]]:
+    """
+    Load Question, Answer, SOM contexts and Cosine contexts from a CSV where each context column contains a stringified list.
+    Columns: 'question' | 'answer' | 'som_context' | 'cosine_context'
+    """
+    try:
+        df = pd.read_csv(csv_file)
+        if 'som_context' not in df.columns or 'cosine_context' not in df.columns or 'question' not in df.columns or 'answer' not in df.columns:
+            raise ValueError("CSV must contain 'question', 'answer', 'som_context' and 'cosine_context' columns")
+
+        def safe_eval(x):
+            try:
+                # Use ast.literal_eval for safer evaluation
+                result = ast.literal_eval(x)
+                # If it's a tuple, extract the first element (the context list)
+                if isinstance(result, tuple):
+                    return result[0]
+                return result
+            except:
+                return []
+
+        questions = df['question'].astype(str).str.strip().tolist()
+        answers = df['answer'].astype(str).str.strip().tolist()
+        som_contexts = df['som_context'].apply(safe_eval).tolist()
+        cosine_contexts = df['cosine_context'].apply(safe_eval).tolist()
+
+        print(f"Loaded {len(questions)} questions and answers from {csv_file}")
+        print(f"Loaded {len(som_contexts)} context pairs from {csv_file}")
+        return questions, answers, som_contexts, cosine_contexts
+    except Exception as e:
+        print(f"Error loading questions, answers, and contexts from CSV: {e}")
+        return [], [], [], []
+
+def avg_confidence(conf_list):
+    if conf_list is None or len(conf_list) == 0:
+        return 0.0
+    return float(np.mean(conf_list))
 
 def main():
     """Main function to run the scaled evaluation"""
     parser = argparse.ArgumentParser(description='Scale up context evaluation with actual data')
-    parser.add_argument('--qa_file', type=str, default='questions_answers.xlsx', 
+    parser.add_argument('--contexts_file', type=str, default='retrieved_contexts',
+                        help='Base path for context files (without extension)')
+    parser.add_argument('--pkl_file', type=str, default='contexts/retrieved_contexts.pkl', 
                        help='Path to Excel file with questions and answers')
-    parser.add_argument('--csv_file', type=str, default='results/retrieved_contexts.csv',
+    parser.add_argument('--csv_file', type=str, default='contexts/retrieved_contexts.csv',
                        help='Path to CSV file with notebook results (alternative to context_file)')
     parser.add_argument('--max_questions', type=int, default=5000,
                        help='Maximum number of questions to evaluate')
@@ -433,6 +459,9 @@ def main():
                        help='Question sampling method: sequential (first N) or random')
     
     args = parser.parse_args()
+
+    args.pkl_file = f"contexts/{args.contexts_file}.pkl"
+    args.csv_file = f"contexts/{args.contexts_file}.csv"
     
     print("="*60)
     print("SCALE UP EVALUATION WITH ACTUAL DATA")
@@ -445,43 +474,33 @@ def main():
     
     if args.use_ray:
         print(f"Ray distributed evaluation enabled with {args.ray_evaluators} evaluators")
-    
-    # Load Q&A data
-    questions, answers = load_qa_data(args.qa_file)
-    if not questions:
-        print("Failed to load Q&A data. Exiting.")
-        return
-    
-    # Limit to max_questions
-    if len(questions) > args.max_questions:
-        print(f"Limiting evaluation to {args.max_questions} questions (from {len(questions)} total)")
-        
-        if args.sampling == 'random':
-            # Random sampling for balanced difficulty distribution
-            import random
-            random.seed(42)  # For reproducible results
-            indices = random.sample(range(len(questions)), args.max_questions)
-            indices.sort()  # Keep some order for consistency
-            questions = [questions[i] for i in indices]
-            answers = [answers[i] for i in indices]
-            print(f"Using random sampling (seed=42) for representative evaluation")
-        else:
-            # Sequential sampling (first N questions)
-            questions = questions[:args.max_questions]
-            answers = answers[:args.max_questions]
-            print(f"Using sequential sampling (first {args.max_questions} questions)")
-    
-    # Load contexts - try several pickle locations first, then CSV
-    som_contexts, cosine_contexts = [], []
-
-    # Potential pickle locations (project root and Self-Organizing-Maps subdir)
-    possible_paths = [
-        ("contexts/som_contexts_scores.pkl", "contexts/cosine_contexts_scores.pkl"),
-        ("Self-Organizing-Maps/contexts/som_contexts_scores.pkl", "Self-Organizing-Maps/contexts/cosine_contexts_scores.pkl"),
-        (os.path.join(os.getcwd(), "contexts/som_contexts_scores.pkl"), os.path.join(os.getcwd(), "contexts/cosine_contexts_scores.pkl")),
-    ]
 
     loaded = False
+
+    # Load questions, answers, and contexts from pickle file
+    if args.pkl_file and os.path.exists(args.pkl_file):
+        try:
+            print(f"Loading questions, answers and contexts from pickle: {args.pkl_file}")
+            with open(args.pkl_file, 'rb') as f:
+                retrieved = pickle.load(f)
+            questions = [item["question"] for item in retrieved]
+            answers = [item["answer"] for item in retrieved]
+            som_contexts = [item["som_contexts"] for item in retrieved]
+            som_scores = [item["som_scores"] for item in retrieved]
+            cosine_contexts = [item["cosine_contexts"] for item in retrieved]
+            cosine_scores = [item["cosine_scores"] for item in retrieved]
+            print(f"Loaded {len(questions)} questions, answers and contexts from pickle: {args.pkl_file}")
+            loaded = True
+        except Exception as e:
+            print(f"Error loading pickle file {args.pkl_file}: {e}")
+
+    # # Potential pickle locations (project root and Self-Organizing-Maps subdir)
+    # possible_paths = [
+    #     ("contexts/som_contexts_scores.pkl", "contexts/cosine_contexts_scores.pkl"),
+    #     ("Self-Organizing-Maps/contexts/som_contexts_scores.pkl", "Self-Organizing-Maps/contexts/cosine_contexts_scores.pkl"),
+    #     (os.path.join(os.getcwd(), "contexts/som_contexts_scores.pkl"), os.path.join(os.getcwd(), "contexts/cosine_contexts_scores.pkl")),
+    # ]
+
     # for som_p, cos_p in possible_paths:
     #     if os.path.exists(som_p) and os.path.exists(cos_p):
     #         try:
@@ -502,18 +521,40 @@ def main():
 
     # Fallback to CSV if pickle loading failed
     if not loaded and args.csv_file and os.path.exists(args.csv_file):
-        som_contexts, cosine_contexts = load_from_csv_results(args.csv_file)
-        print(f"Loaded contexts from CSV: {args.csv_file}")
+        print(f"Loading questions, answers and contexts from CSV: {args.csv_file}")
+        questions, answers, som_contexts, som_scores, cosine_contexts, cosine_scores = load_from_csv_results(args.csv_file)
+        print(f"Loaded {len(questions)} questions, answers and contexts from CSV: {args.csv_file}")
+        if not questions or not answers or not som_contexts or not cosine_contexts:
+            print("Failed to load Q&A data and contexts. Exiting.")
+            return
         loaded = True
     
-    
-    # Ensure we have contexts for all questions
-    if len(som_contexts) < len(questions):
-        print(f"Warning: Only {len(som_contexts)} SOM contexts available for {len(questions)} questions")
-        questions = questions[:len(som_contexts)]
-        answers = answers[:len(som_contexts)]
-        som_contexts = som_contexts[:len(questions)]
-        cosine_contexts = cosine_contexts[:len(questions)]
+    # Limit to max_questions
+    if len(questions) > args.max_questions:
+        print(f"Limiting evaluation to {args.max_questions} questions (from {len(questions)} total)")
+        
+        if args.sampling == 'random':
+            # Random sampling for balanced difficulty distribution
+            import random
+            random.seed(42)  # For reproducible results
+            indices = random.sample(range(len(questions)), args.max_questions)
+            indices.sort()  # Keep some order for consistency
+            questions = [questions[i] for i in indices]
+            answers = [answers[i] for i in indices]
+            som_contexts = [som_contexts[i] for i in indices]
+            som_scores = [som_scores[i] for i in indices]
+            cosine_contexts = [cosine_contexts[i] for i in indices]
+            cosine_scores = [cosine_scores[i] for i in indices]
+            print(f"Using random sampling (seed=42) for representative evaluation")
+        else:
+            # Sequential sampling (first N questions)
+            questions = questions[:args.max_questions]
+            answers = answers[:args.max_questions]
+            som_contexts = som_contexts[:args.max_questions]
+            som_scores = som_scores[:args.max_questions]
+            cosine_contexts = cosine_contexts[:args.max_questions]
+            cosine_scores = cosine_scores[:args.max_questions]
+            print(f"Using sequential sampling (first {args.max_questions} questions)")
     
     print(f"\nReady to evaluate {len(questions)} questions with actual context data")
     print(f"SOM contexts available: {len(som_contexts)}")
@@ -527,21 +568,31 @@ def main():
         ray_evaluators=args.ray_evaluators,
         batch_size=args.batch_size
     )
+
+    # Calculate average confidence scores and add to DataFrame
+    df['som_avg_confidence'] = [avg_confidence(scores) for scores in som_scores]
+    df['cosine_avg_confidence'] = [avg_confidence(scores) for scores in cosine_scores]
     
     # Print results
     print_evaluation_summary(df, som_metrics, cosine_metrics)
     
     # Create visualization
-    chart_file = f"results/scaled_comparison_chart_{len(questions)}_questions.png"
+    chart_file = f"evaluation_results_logs/comparison_chart_{len(questions)}_questions_{args.contexts_file}.png"
     create_comparison_chart(som_metrics, cosine_metrics, chart_file)
     
-    # Save results
-    results_file = f"evaluation_results_logs/scaled_evaluation_results_{len(questions)}_questions.csv"
+    # Save results : CSV
+    results_file = f"evaluation_results_logs/evaluation_results_{len(questions)}_questions_{args.contexts_file}.csv"
     df.to_csv(results_file, index=False)
     print(f"\nDetailed results saved to {results_file}")
+
+    # Save results : pickle
+    results_pickle_file = f"evaluation_results_logs/evaluation_results_{len(questions)}_questions_{args.contexts_file}.pkl"
+    with open(results_pickle_file, 'wb') as f:
+        pickle.dump(df, f)
+    print(f"Detailed results pickle saved to {results_pickle_file}")
     
     # Save metrics
-    metrics_file = f"evaluation_results_logs/scaled_metrics_{len(questions)}_questions.json"
+    metrics_file = f"evaluation_results_logs/metrics_{len(questions)}_questions_{args.contexts_file}.json"
     with open(metrics_file, 'w') as f:
         json.dump({
             'som_metrics': som_metrics,

@@ -265,6 +265,7 @@ def log_som_training( number_of_chunks: int,
                     lattice: str,
                     rough_len: int,
                     finetune_len: int,
+                    top_k: int,
                     topographic_error: float,
                     quantization_error: float,
                     log_path: str = "results/som_training_logs.csv"):
@@ -276,7 +277,7 @@ def log_som_training( number_of_chunks: int,
 
     file_exists = os.path.isfile(log_path)
     with open(log_path, "a", newline='') as csvfile:
-        fieldnames = ['timestamp', 'number_of_chunks', 'number_of_questions', 'map_size', 'lattice', 'rough_len', 'finetune_len', 'topographic_error', 'quantization_error']
+        fieldnames = ['timestamp', 'number_of_chunks', 'number_of_questions', 'map_size', 'lattice', 'top_k', 'rough_len', 'finetune_len', 'topographic_error', 'quantization_error']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         if not file_exists:
             writer.writeheader()
@@ -286,6 +287,7 @@ def log_som_training( number_of_chunks: int,
             'number_of_questions': number_of_questions,
             'map_size': f"{map_size_tuple[0]},{map_size_tuple[1]}",
             'lattice':f"{lattice}",
+            'top_k': top_k,
             'rough_len': rough_len,
             'finetune_len': finetune_len,
             'topographic_error': f"{topographic_error:.6f}",
@@ -309,7 +311,7 @@ def find_closest_hit_per_bmu(sm):
     bmu_first_hit_vectors = [data[int(i)] if not np.isnan(i) else None for i in closest_indices]
     return closest_indices, bmu_first_hit_vectors
 
-def find_query_k_bmus_cosine(normed_query_embedding, som_model, bmu_first_hit_vectors_with_indices, top_k=5):
+def find_query_k_bmus_cosine(normed_query_embedding, som_model, bmu_first_hit_vectors_with_indices, bmu_k):
     """Retrieve top BMUs using cosine similarity"""
     filtered = [(i, v) for i, v in bmu_first_hit_vectors_with_indices if v is not None and not np.isnan(v).any()]
     if len(filtered) == 0:
@@ -321,8 +323,9 @@ def find_query_k_bmus_cosine(normed_query_embedding, som_model, bmu_first_hit_ve
     
     similarities = cosine_similarity(normed_query_embedding, vectors)
     sorted_indices_desc = np.argsort(similarities[0])[::-1]
-    top_k_indices = sorted_indices_desc[:top_k]
-    selected_bmu_index = indices[top_k_indices]
+    bmu_k_indices = sorted_indices_desc[:bmu_k]
+    selected_bmu_index = indices[bmu_k_indices]
+    print(f"Top {bmu_k} BMU indices: {selected_bmu_index}")
     
     return selected_bmu_index
 
@@ -332,7 +335,7 @@ def normalize_reshape_query(query_embedding, sm): #####Find a different way
     normed_query_embedding = sm._normalizer.normalize_by(sm.data_raw, vec)
     return normed_query_embedding
 
-def get_query_context_som_with_scores(query_embedding, som_model, bmu_hit_vectors_with_indices, chunks, top_k=5, bmu_k=5):
+def get_query_context_som_with_scores(query_embedding, som_model, bmu_hit_vectors_with_indices, chunks, top_k=5, bmu_k=10):
     """Get SOM-based context for a query"""
     q_vec = normalize_reshape_query(query_embedding, som_model)
     q_bmus = find_query_k_bmus_cosine(q_vec, som_model, bmu_hit_vectors_with_indices, bmu_k)
@@ -387,7 +390,7 @@ def get_query_context_cosine_with_scores(query_embeddings, chunks, top_k=5): ##c
     
     return context[:top_k], context_score[:top_k]
 
-def retrieve_final_contexts_som(question_embedding):
+def retrieve_final_contexts_som(question_embedding, top_k=NUM_CONTEXTS):
     """Retrieve SOM contexts for a question"""
     global sm, docs
     
@@ -397,27 +400,31 @@ def retrieve_final_contexts_som(question_embedding):
     bmu_first_hit_indices, bmu_first_hit_vectors = find_closest_hit_per_bmu(sm)
     bmu_hit_vectors_with_indices = [(i, v) for i, v in enumerate(bmu_first_hit_vectors)]
 
-    context, scores = get_query_context_som_with_scores(question_embedding, sm, bmu_hit_vectors_with_indices, docs, NUM_CONTEXTS)
+    context, scores = get_query_context_som_with_scores(question_embedding, sm, bmu_hit_vectors_with_indices, docs, top_k)
     return context, scores
 
-def retrieve_final_contexts_cosine(question_embedding):
+def retrieve_final_contexts_cosine(question_embedding, top_k=NUM_CONTEXTS):
     """Retrieve cosine similarity contexts for a question"""
     global docs
     
-    context, scores = get_query_context_cosine_with_scores(question_embedding.reshape(1, -1), docs, NUM_CONTEXTS)
+    context, scores = get_query_context_cosine_with_scores(question_embedding.reshape(1, -1), docs, top_k)
     return context, scores
 
 def find_contexts_all_questions(
         input_path: str, 
-        output_path: str = "results/retrieved_contexts.csv", 
+        output_path: str = "contexts/retrieved_contexts", 
         max_chunks: int = MAX_CHUNKS, 
         max_questions: int = MAX_QUESTIONS,
         map_size: tuple = (10,10),
         rough_len_method: str = "embedding_formula",
         finetune_len_method: str = "embedding_formula",
-        lattice: str = "rect"
+        lattice: str = "rect",
+        top_k: int = NUM_CONTEXTS
     ):
     """Main function to generate contexts for all questions"""
+
+    output_path_pkl = output_path + ".pkl"
+    output_path_csv = output_path + ".csv"
     
     if not os.path.exists(input_path):
         print(f"Excel file not found: {input_path}")
@@ -472,6 +479,7 @@ def find_contexts_all_questions(
         lattice=lattice,
         rough_len=rough_len,
         finetune_len=finetune_len,
+        top_k=top_k,
         topographic_error=topographic_error,
         quantization_error=quantization_error
     )
@@ -485,8 +493,8 @@ def find_contexts_all_questions(
         print(f"Processing question {i+1}/{len(questions)}: {question[:50]}...")
         
         try:
-            som_contexts, som_scores = retrieve_final_contexts_som(embedding)
-            cosine_contexts, cosine_scores = retrieve_final_contexts_cosine(embedding)
+            som_contexts, som_scores = retrieve_final_contexts_som(embedding, top_k)
+            cosine_contexts, cosine_scores = retrieve_final_contexts_cosine(embedding, top_k)
             
             results.append({
                 "question": question,
@@ -516,19 +524,19 @@ def find_contexts_all_questions(
     print("Saving results...")
     
     # Create results directory if it doesn't exist with proper permissions
-    results_dir = os.path.dirname(output_path)
+    results_dir = 'contexts'
     if results_dir and not os.path.exists(results_dir):
         os.makedirs(results_dir, mode=0o777, exist_ok=True)
     
     # Ensure we can write to the current directory
-    if not output_path.startswith('/'):
+    if not output_path_csv.startswith('/'):
         # For relative paths, write to current directory
-        output_path = os.path.join(os.getcwd(), output_path)
+        output_path_csv = os.path.join(os.getcwd(), output_path_csv)
     
-    print(f"Writing to: {output_path}")
+    print(f"Writing to: {output_path_csv}")
     
     # Save as CSV
-    with open(output_path, "w", newline='', encoding="utf-8") as csvfile:
+    with open(output_path_csv, "w", newline='', encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["question", "answer", "som_context", "som_scores", "cosine_context", "cosine_scores"])
         
@@ -543,8 +551,6 @@ def find_contexts_all_questions(
             ])
     
     # Save as pickle for the evaluation script
-    contexts_dir = "contexts"
-    os.makedirs(contexts_dir, mode=0o777, exist_ok=True)
     
     # Save questions, answers and retrieved contexts into a single pickle
     retrieved = [
@@ -558,11 +564,11 @@ def find_contexts_all_questions(
         }
         for r in results
     ]
-    with open(f"{contexts_dir}/retrieved_contexts.pkl", "wb") as f:
+    with open(f"{output_path_pkl}", "wb") as f:
         pickle.dump(retrieved, f)
     
     # print(f"✅ Saved results to {output_path}")
-    print(f"✅ Saved pickle files to {contexts_dir}/")
+    print(f"✅ Saved pickle files to {output_path_pkl}")
     print(f"✅ Processed {len(results)} questions successfully")
 
 if __name__ == "__main__":
@@ -586,9 +592,16 @@ if __name__ == "__main__":
                         help="Method to calculate finetune_len (default: %(default)s)")
     parser.add_argument("--lattice", type=str, choices=['rect','hexa'], default='rect',
                         help="The shape of the map nodes (default: %(default)s)")
+    parser.add_argument("--num_contexts", type=int, default=NUM_CONTEXTS,
+                        help="Number of top contexts to retrieve (default: %(default)s)")
     args = parser.parse_args()
 
     # Use parsed args to call main function
+    # Generate output path if not explicitly provided
+    if args.output == OUTPUT_FILE:
+        map_size_str = f"{args.map_size.split(',')[0]}x{args.map_size.split(',')[1]}"
+        args.output = f"contexts/retrieved_contexts_c{args.max_chunks}_q{args.max_questions}_map_{map_size_str}_{args.lattice}_k{args.num_contexts}"
+    
     find_contexts_all_questions(
         input_path=args.input,
         output_path=args.output,
@@ -597,5 +610,6 @@ if __name__ == "__main__":
         map_size=tuple(map(int, args.map_size.split(','))),
         rough_len_method=args.rough_len_method,
         finetune_len_method=args.finetune_len_method,
-        lattice=args.lattice
+        lattice=args.lattice,
+        top_k=args.num_contexts
     )

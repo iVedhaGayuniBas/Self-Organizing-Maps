@@ -76,7 +76,7 @@ class OllamaEvaluator:
         Response:"""
         
         response = self.query_llm(prompt)
-        print(f"LLM response: {response}")
+        print(f"LLM response: {response} | Question: {question[:20]}")
         return response.upper().startswith("TRUE")
 
 # Ray-enabled evaluator for distributed processing
@@ -123,8 +123,8 @@ def create_comparison_chart(som_metrics: Dict, cosine_metrics: Dict, save_path: 
 
     patterns = [ "/" , "\\" , "|" , "-" , "+" , "x", "o", "O", ".", "*" ]
 
-    bars1 = ax.bar(x - width/2, som_values, width, label='SOMpy', color='red', edgecolor='black', alpha=0.8, hatch=patterns[0])
-    bars2 = ax.bar(x + width/2, cosine_values, width, label='Cosine Similarity', color='red', edgecolor='black', alpha=0.8, hatch=patterns[6])
+    bars1 = ax.bar(x - width/2, som_values, width, label='SOMpy', fill=False, edgecolor='black', linewidth=2, hatch=patterns[0]*3)
+    bars2 = ax.bar(x + width/2, cosine_values, width, label='Cosine Similarity', fill=False, edgecolor='black', linewidth=2, hatch=patterns[6]*3)
     
     ax.set_xlabel('Metrics')
     ax.set_ylabel('Score')
@@ -437,9 +437,11 @@ def avg_confidence(conf_list):
 def main():
     """Main function to run the scaled evaluation"""
     parser = argparse.ArgumentParser(description='Scale up context evaluation with actual data')
-    parser.add_argument('--qa_file', type=str, default='contexts/retrieved_contexts.pkl', 
+    parser.add_argument('--contexts_file', type=str, default='retrieved_contexts',
+                        help='Base path for context files (without extension)')
+    parser.add_argument('--pkl_file', type=str, default='contexts/retrieved_contexts.pkl', 
                        help='Path to Excel file with questions and answers')
-    parser.add_argument('--csv_file', type=str, default='results/retrieved_contexts.csv',
+    parser.add_argument('--csv_file', type=str, default='contexts/retrieved_contexts.csv',
                        help='Path to CSV file with notebook results (alternative to context_file)')
     parser.add_argument('--max_questions', type=int, default=5000,
                        help='Maximum number of questions to evaluate')
@@ -457,6 +459,9 @@ def main():
                        help='Question sampling method: sequential (first N) or random')
     
     args = parser.parse_args()
+
+    args.pkl_file = f"contexts/{args.contexts_file}.pkl"
+    args.csv_file = f"contexts/{args.contexts_file}.csv"
     
     print("="*60)
     print("SCALE UP EVALUATION WITH ACTUAL DATA")
@@ -473,10 +478,10 @@ def main():
     loaded = False
 
     # Load questions, answers, and contexts from pickle file
-    if args.qa_file and os.path.exists(args.qa_file):
+    if args.pkl_file and os.path.exists(args.pkl_file):
         try:
-            print(f"Loading questions, answers and contexts from pickle: {args.qa_file}")
-            with open(args.qa_file, 'rb') as f:
+            print(f"Loading questions, answers and contexts from pickle: {args.pkl_file}")
+            with open(args.pkl_file, 'rb') as f:
                 retrieved = pickle.load(f)
             questions = [item["question"] for item in retrieved]
             answers = [item["answer"] for item in retrieved]
@@ -484,10 +489,10 @@ def main():
             som_scores = [item["som_scores"] for item in retrieved]
             cosine_contexts = [item["cosine_contexts"] for item in retrieved]
             cosine_scores = [item["cosine_scores"] for item in retrieved]
-            print(f"Loaded {len(questions)} questions, answers and contexts from pickle: {args.qa_file}")
+            print(f"Loaded {len(questions)} questions, answers and contexts from pickle: {args.pkl_file}")
             loaded = True
         except Exception as e:
-            print(f"Error loading pickle file {args.qa_file}: {e}")
+            print(f"Error loading pickle file {args.pkl_file}: {e}")
 
     # # Potential pickle locations (project root and Self-Organizing-Maps subdir)
     # possible_paths = [
@@ -572,22 +577,22 @@ def main():
     print_evaluation_summary(df, som_metrics, cosine_metrics)
     
     # Create visualization
-    chart_file = f"evaluation_results_logs/scaled_comparison_chart_{len(questions)}_questions.png"
+    chart_file = f"evaluation_results_logs/comparison_chart_{len(questions)}_questions_{args.contexts_file}.png"
     create_comparison_chart(som_metrics, cosine_metrics, chart_file)
     
     # Save results : CSV
-    results_file = f"evaluation_results_logs/scaled_evaluation_results_{len(questions)}_questions.csv"
+    results_file = f"evaluation_results_logs/evaluation_results_{len(questions)}_questions_{args.contexts_file}.csv"
     df.to_csv(results_file, index=False)
     print(f"\nDetailed results saved to {results_file}")
 
     # Save results : pickle
-    results_pickle_file = f"evaluation_results_logs/scaled_evaluation_results_{len(questions)}_questions.pkl"
+    results_pickle_file = f"evaluation_results_logs/evaluation_results_{len(questions)}_questions_{args.contexts_file}.pkl"
     with open(results_pickle_file, 'wb') as f:
         pickle.dump(df, f)
     print(f"Detailed results pickle saved to {results_pickle_file}")
     
     # Save metrics
-    metrics_file = f"evaluation_results_logs/scaled_metrics_{len(questions)}_questions.json"
+    metrics_file = f"evaluation_results_logs/metrics_{len(questions)}_questions_{args.contexts_file}.json"
     with open(metrics_file, 'w') as f:
         json.dump({
             'som_metrics': som_metrics,

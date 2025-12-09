@@ -19,15 +19,23 @@ sompy-container "python3 prepare_embeddings.py wiki --max_chunks 500 --use_ollam
 # Generate question embeddings using Ollama : Shape (5537, 1024)
 sompy-container "python3 prepare_embeddings.py questions --input questions_answers.xlsx"
 
+# Optional : Load cohere wikipedia embeddings using Ollama : Shape (max_chunks,768)
+python3 prepare_embeddings_cohere.py wiki --max_chunks 500
+
+# Optional : Generate question embeddings using Cohere : Shape (5537, 768)
+python3 prepare_embeddings_cohere.py questions --input questions_answers.xlsx
+# optional overrides
+python3 prepare_embeddings_cohere.py questions --input questions_answers.xlsx --cohere_api_key "$COHERE_API_KEY" --output_dimension 768 --model multilingual-22-12
+
 # Generate contexts (one-time)
 sudo docker run --rm --gpus all --network host \
   -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts \
-  sompy-container "python3 generate_contexts.py --max_chunks 5000 --max_questions 5000 --map_size '10,10' --lattice 'rect' --rough_len_method 'neurons_formula' --finetune_len_method 'embedding_formula'"
+  sompy-container "python3 generate_contexts.py --max_chunks 5000 --max_questions 5000 --map_size '50,30' --lattice 'rect' --num_contexts 5"
 
 # Run evaluation
 sudo docker run --rm --gpus all --network host \
   -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts -v $(pwd):/app/output \
-  sompy-container "python3 scale_up_evaluation.py --max_questions 500 --sampling random"
+  sompy-container "python3 scale_up_evaluation.py --contexts_file retrieved_contexts_c5000_q5000_map_50x30_rect_k1 --max_questions 500 --sampling random"
 ```
 
 **Prerequisites**: Docker with NVIDIA GPU support, CUDA 12.1.1+, 16GB+ RAM
