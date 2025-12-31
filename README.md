@@ -30,12 +30,16 @@ python3 prepare_embeddings_cohere.py questions --input questions_answers.xlsx --
 # Generate contexts (one-time)
 sudo docker run --rm --gpus all --network host \
   -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts \
-  sompy-container "python3 generate_contexts.py --max_chunks 5000 --max_questions 5000 --map_size '50,30' --lattice 'rect' --num_contexts 5"
+  sompy-container "python3 generate_contexts.py --max_chunks 5000 --max_questions 5000 --map_size '15,20' --lattice 'rect' --num_contexts 1"
+
+sudo docker run --rm --gpus all --network host \
+  -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts \
+  sompy-container "python3 generate_contexts_only_bmus.py --input filtered_questions_som.csv --max_chunks 5000 --max_questions 1987 --map_size '15,20' --lattice 'rect' --num_contexts 1"
 
 # Run evaluation
 sudo docker run --rm --gpus all --network host \
   -v $(pwd)/results:/app/results -v $(pwd)/contexts:/app/contexts -v $(pwd):/app/output \
-  sompy-container "python3 scale_up_evaluation.py --contexts_file retrieved_contexts_c5000_q5000_map_50x30_rect_k1 --max_questions 500 --sampling random"
+  sompy-container "python3 scale_up_evaluation.py --contexts_file retrieved_contexts_c5000_q5000_map_15x20_rect_k1 --max_questions 1000 --sampling random"
 ```
 
 **Prerequisites**: Docker with NVIDIA GPU support, CUDA 12.1.1+, 16GB+ RAM
